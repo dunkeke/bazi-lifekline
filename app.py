@@ -66,6 +66,32 @@ def to_beijing_time(
     beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
     return beijing_dt, solar_delta_minutes
 
+
+LOCATION_TIMEZONES = {
+    "北京 (UTC+08:00)": "Asia/Shanghai",
+    "伦敦 (UTC+00:00)": "Europe/London",
+    "纽约 (UTC-05:00)": "America/New_York",
+    "悉尼 (UTC+10:00)": "Australia/Sydney",
+    "自定义偏移": "custom",
+}
+
+
+def to_beijing_time(year: int, month: int, day: int, hour: int, tz_label: str, offset_hours: float):
+    """校准出生地时间到北京时区，避免跨日误差。"""
+
+    def _as_timezone(base_dt: dt.datetime):
+        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
+        if tz_value == "custom":
+            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
+        try:
+            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
+        except ZoneInfoNotFoundError:
+            return base_dt.replace(tzinfo=dt.timezone.utc)
+
+    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
+    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
+    return beijing_dt
+
 st.set_page_config(page_title="八字人生K线", layout="wide")
 
 st.title("八字排盘 × 大运流年 × 人生K线（不改动源程序）")
@@ -92,6 +118,10 @@ with st.sidebar:
         step=0.5,
         help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
     )
+
+    st.markdown("### 出生地校准（北京时间基准）")
+    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0)
+    offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
 
     sex = st.radio("性别", ["男", "女"], horizontal=True)
     is_leap = st.checkbox("农历闰月（仅农历有效）", value=False)
@@ -135,6 +165,11 @@ if run:
     st.caption(
         f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
         f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
+    )
+
+    st.caption(
+        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
+        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00。"
     )
 
     # 3) 解析大运/流年
