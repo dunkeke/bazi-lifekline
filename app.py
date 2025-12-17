@@ -11,6 +11,7 @@ from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
     DEFAULT_BOOST,
     DEFAULT_RISK,
+    SPECIAL_PATTERN_WEIGHTS,
     build_life_index,
     build_year_signal,
     to_decade_ohlc,
@@ -119,9 +120,14 @@ with st.sidebar:
     st.divider()
     st.header("评分与指数映射（可调）")
     base = st.number_input("指数起点", min_value=10.0, max_value=1000.0, value=100.0, step=10.0)
+    strength_index = st.slider("日主强度指数 I", 0.0, 1.0, 0.5, 0.05, help="得令/得地/得势/通根插值后的强度，0=身弱，1=身强")
+    special_label = st.selectbox("特殊格局覆盖", ["无"] + list(SPECIAL_PATTERN_WEIGHTS.keys()))
+    special_pattern = None if special_label == "无" else SPECIAL_PATTERN_WEIGHTS.get(special_label)
     up = st.slider("基准上行年 +%", 0.0, 5.0, 1.2, 0.1)
     down = st.slider("基准回撤年 -%", 0.0, 5.0, 1.0, 0.1)
     cycle = st.slider("周期(年)", 2, 12, 6, 1, help="用于构造波段节奏，结合刑冲破害进行修正")
+    ten_god_weight = st.slider("十神/五行评分权重", 0.0, 30.0, 10.0, 0.5, help="将十神喜忌 × 五行生克的结果放大到年度波动")
+    relation_trigger = st.slider("刑冲合害触发系数", 0.0, 3.0, 1.0, 0.1, help="控制三合六合刑冲破害的影响强度")
     keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 0.6, 0.1)
     keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 1.0, 0.1)
     dayun_drag = st.slider("大运凶象拖累", 0.0, 2.0, 0.6, 0.1)
@@ -181,6 +187,10 @@ if run:
         boost={k: v * keyword_boost for k, v in DEFAULT_BOOST.items()},
         risk={k: v * keyword_risk for k, v in DEFAULT_RISK.items()},
         dayun_risk_weight=dayun_drag,
+        strength_index=strength_index,
+        special_pattern=special_pattern,
+        relation_trigger=relation_trigger,
+        ten_god_weight=ten_god_weight,
     )
 
     life = build_life_index(df_liunian, year_signal, base=base)
