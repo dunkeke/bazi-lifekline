@@ -9,6 +9,87 @@ DEFAULT_WEIGHTS = {
     "官": 0.7, "杀": 0.3,
 }
 
+# 关键字强弱项：在 bazi.py 的大运/流年描述中常见到“刑冲破害”“合生贵财”等
+DEFAULT_RISK = {
+    "刑": 0.9,
+    "冲": 1.1,
+    "破": 0.8,
+    "害": 1.0,
+    "劫": 0.6,
+    "空亡": 1.2,
+}
+
+DEFAULT_BOOST = {
+    "合": 0.9,
+    "生": 0.6,
+    "禄": 0.8,
+    "喜": 0.6,
+    "财": 0.7,
+    "官": 0.8,
+    "贵": 0.9,
+}
+
+
+def _score_keywords(text: str, boost: dict[str, float], risk: dict[str, float]) -> float:
+    score = 0.0
+    for k, v in boost.items():
+        if k in text:
+            score += v
+    for k, v in risk.items():
+        if k in text:
+            score -= v
+    return score
+
+
+def _locate_dayun(age: int, dayun_df: pd.DataFrame) -> pd.Series | None:
+    """找到该年龄所在的大运行，方便把“刑冲破害”叠加到流年评分。"""
+
+    if dayun_df.empty:
+        return None
+
+    sorted_df = dayun_df.sort_values("start_age")
+    current = sorted_df[sorted_df["start_age"] <= age].tail(1)
+    if current.empty:
+        return None
+    return current.iloc[0]
+
+
+def build_year_signal(
+    liunian_df: pd.DataFrame,
+    dayun_df: pd.DataFrame,
+    base_up: float,
+    base_down: float,
+    cycle: int,
+    boost: dict[str, float] | None = None,
+    risk: dict[str, float] | None = None,
+    dayun_risk_weight: float = 0.6,
+) -> pd.Series:
+    """
+    结合周期性涨跌、流年/大运描述中的刑冲破害/合生喜贵等关键词，生成逐年信号。
+    返回 index=年份 的 pd.Series
+    """
+
+    boost = boost or DEFAULT_BOOST
+    risk = risk or DEFAULT_RISK
+
+    signals = {}
+    liunian_df = liunian_df.sort_values("year").reset_index(drop=True)
+    for idx, row in liunian_df.iterrows():
+        cyc = base_up if (idx % cycle) < cycle / 2 else -base_down
+        desc = str(row.get("desc", ""))
+        dayun = _locate_dayun(int(row.get("age", 0)), dayun_df)
+        dayun_desc = str(dayun["desc"]) if dayun is not None else ""
+
+        keyword_score = _score_keywords(desc + " " + dayun_desc, boost, risk)
+
+        # 额外强调“大运凶”对该阶段流年的拖累
+        if any(k in dayun_desc for k in risk.keys()):
+            keyword_score -= dayun_risk_weight
+
+        signals[row["year"]] = cyc + keyword_score
+
+    return pd.Series(signals)
+
 def build_life_index(liunian_df: pd.DataFrame, year_signal: pd.Series, base=100.0):
     """
     year_signal: 每年一个分数（正=上行，负=回撤），index=year
