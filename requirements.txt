@@ -4,3 +4,4 @@ pandas
 numpy
 lunar_python
 colorama
+bidict
