@@ -1,21 +1,33 @@
 import datetime as dt
 import math
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import Tuple
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
+except ImportError:  # Python < 3.9 fallback
+    from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
-from score_model import build_life_index, to_decade_ohlc
+from score_model import (
+    DEFAULT_BOOST,
+    DEFAULT_RISK,
+    SPECIAL_PATTERN_WEIGHTS,
+    build_life_index,
+    build_year_signal,
+    to_decade_ohlc,
+)
 
-
-LOCATION_TIMEZONES = {
-    "北京 (UTC+08:00)": "Asia/Shanghai",
-    "伦敦 (UTC+00:00)": "Europe/London",
-    "纽约 (UTC-05:00)": "America/New_York",
-    "悉尼 (UTC+10:00)": "Australia/Sydney",
-    "自定义偏移": "custom",
+# 常见城市的时区与经度，便于做真太阳时矫正
+LOCATIONS = {
+    "北京 (UTC+08:00)": {"tz": "Asia/Shanghai", "offset": 8.0, "longitude": 116.407},
+    "伦敦 (UTC+00:00)": {"tz": "Europe/London", "offset": 0.0, "longitude": -0.1276},
+    "纽约 (UTC-05:00)": {"tz": "America/New_York", "offset": -5.0, "longitude": -74.006},
+    "悉尼 (UTC+10:00)": {"tz": "Australia/Sydney", "offset": 10.0, "longitude": 151.2093},
+    "自定义偏移": {"tz": "custom", "offset": 8.0, "longitude": 116.407},
 }
 
 
@@ -27,61 +39,14 @@ def _equation_of_time_minutes(date_obj: dt.date) -> float:
     return 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
 
 
-def to_beijing_time(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    tz_label: str,
-    offset_hours: float,
-    use_true_solar: bool = False,
-    longitude: float = 116.407,
-):
-    """
-    校准出生地时间到北京时区，避免跨日误差，并可选真太阳时矫正。
-
-    use_true_solar: 是否从标准时换算到真太阳时（需提供经度）。
-    longitude: 经度（东经为正，西经为负），用来修正地方时。
-    """
-
-    def _as_timezone(base_dt: dt.datetime):
-        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
-        if tz_value == "custom":
-            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
-        try:
-            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
-        except ZoneInfoNotFoundError:
-            return base_dt.replace(tzinfo=dt.timezone.utc)
-
-    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
-    solar_delta_minutes = 0.0
-
-    if use_true_solar:
-        tz_offset_hours = (local_dt.utcoffset().total_seconds() / 3600.0) if local_dt.utcoffset() else 0.0
-        standard_meridian = tz_offset_hours * 15
-        eq_time = _equation_of_time_minutes(local_dt.date())
-        solar_delta_minutes = 4 * (longitude - standard_meridian) + eq_time
-        local_dt = local_dt + dt.timedelta(minutes=solar_delta_minutes)
-
-    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
-    return beijing_dt, solar_delta_minutes
-
-
-LOCATION_TIMEZONES = {
-    "北京 (UTC+08:00)": "Asia/Shanghai",
-    "伦敦 (UTC+00:00)": "Europe/London",
-    "纽约 (UTC-05:00)": "America/New_York",
-    "悉尼 (UTC+10:00)": "Australia/Sydney",
-    "自定义偏移": "custom",
-}
-
-
-def _equation_of_time_minutes(date_obj: dt.date) -> float:
-    """NOAA 近似公式，返回分钟偏移（真太阳 - 平太阳）。"""
-
-    n = date_obj.timetuple().tm_yday
-    b = math.radians((360 / 365) * (n - 81))
-    return 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+def _resolve_timezone(tz_label: str, offset_hours: float) -> dt.tzinfo:
+    tz_value = LOCATIONS.get(tz_label, {}).get("tz", tz_label)
+    if tz_value == "custom":
+        return dt.timezone(dt.timedelta(hours=offset_hours))
+    try:
+        return ZoneInfo(tz_value)
+    except ZoneInfoNotFoundError:
+        return dt.timezone.utc
 
 
 def to_beijing_time(
@@ -93,24 +58,18 @@ def to_beijing_time(
     offset_hours: float,
     use_true_solar: bool = False,
     longitude: float = 116.407,
-):
+) -> Tuple[dt.datetime, float, dt.datetime]:
     """
-    校准出生地时间到北京时区，避免跨日误差，并可选真太阳时矫正。
+    校准出生地时间到北京时区，并可选真太阳时矫正。
 
     use_true_solar: 是否从标准时换算到真太阳时（需提供经度）。
     longitude: 经度（东经为正，西经为负），用来修正地方时。
+
+    返回： (北京时, 真太阳时分钟差, 校准后的当地时间)
     """
 
-    def _as_timezone(base_dt: dt.datetime):
-        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
-        if tz_value == "custom":
-            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
-        try:
-            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
-        except ZoneInfoNotFoundError:
-            return base_dt.replace(tzinfo=dt.timezone.utc)
-
-    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
+    local_dt = dt.datetime(year, month, day, hour)
+    local_dt = local_dt.replace(tzinfo=_resolve_timezone(tz_label, offset_hours))
     solar_delta_minutes = 0.0
 
     if use_true_solar:
@@ -121,154 +80,14 @@ def to_beijing_time(
         local_dt = local_dt + dt.timedelta(minutes=solar_delta_minutes)
 
     beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
-    return beijing_dt, solar_delta_minutes
+    return beijing_dt, solar_delta_minutes, local_dt
 
-
-LOCATION_TIMEZONES = {
-    "北京 (UTC+08:00)": "Asia/Shanghai",
-    "伦敦 (UTC+00:00)": "Europe/London",
-    "纽约 (UTC-05:00)": "America/New_York",
-    "悉尼 (UTC+10:00)": "Australia/Sydney",
-    "自定义偏移": "custom",
-}
-
-
-def _equation_of_time_minutes(date_obj: dt.date) -> float:
-    """NOAA 近似公式，返回分钟偏移（真太阳 - 平太阳）。"""
-
-    n = date_obj.timetuple().tm_yday
-    b = math.radians((360 / 365) * (n - 81))
-    return 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
-
-
-def to_beijing_time(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    tz_label: str,
-    offset_hours: float,
-    use_true_solar: bool = False,
-    longitude: float = 116.407,
-):
-    """
-    校准出生地时间到北京时区，避免跨日误差，并可选真太阳时矫正。
-
-    use_true_solar: 是否从标准时换算到真太阳时（需提供经度）。
-    longitude: 经度（东经为正，西经为负），用来修正地方时。
-    """
-
-    def _as_timezone(base_dt: dt.datetime):
-        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
-        if tz_value == "custom":
-            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
-        try:
-            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
-        except ZoneInfoNotFoundError:
-            return base_dt.replace(tzinfo=dt.timezone.utc)
-
-    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
-    solar_delta_minutes = 0.0
-
-    if use_true_solar:
-        tz_offset_hours = (local_dt.utcoffset().total_seconds() / 3600.0) if local_dt.utcoffset() else 0.0
-        standard_meridian = tz_offset_hours * 15
-        eq_time = _equation_of_time_minutes(local_dt.date())
-        solar_delta_minutes = 4 * (longitude - standard_meridian) + eq_time
-        local_dt = local_dt + dt.timedelta(minutes=solar_delta_minutes)
-
-    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
-    return beijing_dt, solar_delta_minutes
-
-
-LOCATION_TIMEZONES = {
-    "北京 (UTC+08:00)": "Asia/Shanghai",
-    "伦敦 (UTC+00:00)": "Europe/London",
-    "纽约 (UTC-05:00)": "America/New_York",
-    "悉尼 (UTC+10:00)": "Australia/Sydney",
-    "自定义偏移": "custom",
-}
-
-
-def _equation_of_time_minutes(date_obj: dt.date) -> float:
-    """NOAA 近似公式，返回分钟偏移（真太阳 - 平太阳）。"""
-
-    n = date_obj.timetuple().tm_yday
-    b = math.radians((360 / 365) * (n - 81))
-    return 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
-
-
-def to_beijing_time(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    tz_label: str,
-    offset_hours: float,
-    use_true_solar: bool = False,
-    longitude: float = 116.407,
-):
-    """
-    校准出生地时间到北京时区，避免跨日误差，并可选真太阳时矫正。
-
-    use_true_solar: 是否从标准时换算到真太阳时（需提供经度）。
-    longitude: 经度（东经为正，西经为负），用来修正地方时。
-    """
-
-    def _as_timezone(base_dt: dt.datetime):
-        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
-        if tz_value == "custom":
-            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
-        try:
-            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
-        except ZoneInfoNotFoundError:
-            return base_dt.replace(tzinfo=dt.timezone.utc)
-
-    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
-    solar_delta_minutes = 0.0
-
-    if use_true_solar:
-        tz_offset_hours = (local_dt.utcoffset().total_seconds() / 3600.0) if local_dt.utcoffset() else 0.0
-        standard_meridian = tz_offset_hours * 15
-        eq_time = _equation_of_time_minutes(local_dt.date())
-        solar_delta_minutes = 4 * (longitude - standard_meridian) + eq_time
-        local_dt = local_dt + dt.timedelta(minutes=solar_delta_minutes)
-
-    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
-    return beijing_dt, solar_delta_minutes
-
-
-LOCATION_TIMEZONES = {
-    "北京 (UTC+08:00)": "Asia/Shanghai",
-    "伦敦 (UTC+00:00)": "Europe/London",
-    "纽约 (UTC-05:00)": "America/New_York",
-    "悉尼 (UTC+10:00)": "Australia/Sydney",
-    "自定义偏移": "custom",
-}
-
-
-def to_beijing_time(year: int, month: int, day: int, hour: int, tz_label: str, offset_hours: float):
-    """校准出生地时间到北京时区，避免跨日误差。"""
-
-    def _as_timezone(base_dt: dt.datetime):
-        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
-        if tz_value == "custom":
-            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
-        try:
-            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
-        except ZoneInfoNotFoundError:
-            return base_dt.replace(tzinfo=dt.timezone.utc)
-
-    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
-    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
-    return beijing_dt
 
 st.set_page_config(page_title="八字人生K线", layout="wide")
-
 st.title("八字排盘 × 大运流年 × 人生K线（不改动源程序）")
 
 with st.sidebar:
-    st.header("输入")
+    st.header("出生信息")
     cal_type = st.radio("日期类型", ["公历", "农历"], horizontal=True)
     year = st.number_input("年", min_value=1850, max_value=2100, value=1990)
     month = st.number_input("月", min_value=1, max_value=12, value=1)
@@ -276,106 +95,55 @@ with st.sidebar:
     hour = st.number_input("时(0-23)", min_value=0, max_value=23, value=12)
 
     st.markdown("### 出生地校准（北京时间基准）")
-    tz_label = st.selectbox(
-        "选择出生地/时区",
-        list(LOCATION_TIMEZONES.keys()),
-        index=0,
-        key="sidebar_tz_select",
-    )
+    tz_label = st.selectbox("选择出生地/时区", list(LOCATIONS.keys()), index=0)
+    default_offset = LOCATIONS.get(tz_label, {}).get("offset", 8.0)
     offset = st.slider(
         "自定义偏移（小时）",
         -12.0,
         14.0,
-        8.0,
+        default_offset,
         0.5,
         help="仅在选择“自定义偏移”时生效",
-        key="custom_offset_hours",
     )
 
     st.markdown("### 真太阳时校准")
     use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
+    default_longitude = LOCATIONS.get(tz_label, {}).get("longitude", 116.407)
     longitude = st.number_input(
         "出生地经度 (东经+/西经-)",
         min_value=-180.0,
         max_value=180.0,
-        value=116.407,
+        value=float(default_longitude),
         step=0.5,
         help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
     )
-
-    st.markdown("### 出生地校准（北京时间基准）")
-    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0, key="tz_select")
-    offset = st.slider(
-        "自定义偏移（小时）",
-        -12.0,
-        14.0,
-        8.0,
-        0.5,
-        help="仅在选择“自定义偏移”时生效",
-        key="custom_offset_hours",
-    )
-
-    st.markdown("### 真太阳时校准")
-    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
-    longitude = st.number_input(
-        "出生地经度 (东经+/西经-)",
-        min_value=-180.0,
-        max_value=180.0,
-        value=116.407,
-        step=0.5,
-        help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
-    )
-
-    st.markdown("### 出生地校准（北京时间基准）")
-    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0, key="tz_select")
-    offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
-
-    st.markdown("### 真太阳时校准")
-    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
-    longitude = st.number_input(
-        "出生地经度 (东经+/西经-)",
-        min_value=-180.0,
-        max_value=180.0,
-        value=116.407,
-        step=0.5,
-        help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
-    )
-
-    st.markdown("### 出生地校准（北京时间基准）")
-    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0)
-    offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
-
-    st.markdown("### 真太阳时校准")
-    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
-    longitude = st.number_input(
-        "出生地经度 (东经+/西经-)",
-        min_value=-180.0,
-        max_value=180.0,
-        value=116.407,
-        step=0.5,
-        help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
-    )
-
-    st.markdown("### 出生地校准（北京时间基准）")
-    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0)
-    offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
 
     sex = st.radio("性别", ["男", "女"], horizontal=True)
     is_leap = st.checkbox("农历闰月（仅农历有效）", value=False)
 
     st.divider()
-    st.header("人生指数映射（可调）")
+    st.header("评分与指数映射（可调）")
     base = st.number_input("指数起点", min_value=10.0, max_value=1000.0, value=100.0, step=10.0)
-
-    # 先给最简“每年固定波动”示例，后续你可以改成“从流年行解析十神/神煞->分数”
-    up = st.slider("上行年 +%", 0.0, 5.0, 1.2, 0.1)
-    down = st.slider("回撤年 -%", 0.0, 5.0, 1.0, 0.1)
-    cycle = st.slider("周期(年)", 2, 12, 6, 1)
+    strength_index = st.slider("日主强度指数 I", 0.0, 1.0, 0.5, 0.05, help="得令/得地/得势/通根插值后的强度，0=身弱，1=身强")
+    special_label = st.selectbox("特殊格局覆盖", ["无"] + list(SPECIAL_PATTERN_WEIGHTS.keys()))
+    special_pattern = None if special_label == "无" else SPECIAL_PATTERN_WEIGHTS.get(special_label)
+    up = st.slider("基准上行年 +%", 0.0, 5.0, 1.2, 0.1)
+    down = st.slider("基准回撤年 -%", 0.0, 5.0, 1.0, 0.1)
+    cycle = st.slider("周期(年)", 2, 12, 6, 1, help="用于构造波段节奏，结合刑冲破害进行修正")
+    ten_god_weight = st.slider("十神/五行评分权重", 0.0, 30.0, 10.0, 0.5, help="将十神喜忌 × 五行生克的结果放大到年度波动")
+    relation_trigger = st.slider("刑冲合害触发系数", 0.0, 3.0, 1.0, 0.1, help="控制三合六合刑冲破害的影响强度")
+    keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 0.6, 0.1)
+    keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 1.0, 0.1)
+    dayun_drag = st.slider("大运凶象拖累", 0.0, 2.0, 0.6, 0.1)
+    ma_short = st.slider("逐年短期均线", 2, 10, 4, 1)
+    ma_long = st.slider("逐年长期均线", 5, 20, 9, 1)
+    ma_decade_short = st.slider("十年均线1", 2, 6, 2, 1)
+    ma_decade_long = st.slider("十年均线2", 2, 10, 4, 1)
 
 run = st.button("开始批算 + 可视化", type="primary")
 
 if run:
-    calibrated, solar_delta = to_beijing_time(
+    calibrated, solar_delta, local_dt = to_beijing_time(
         int(year), int(month), int(day), int(hour), tz_label, offset, use_true_solar, longitude
     )
     args = [
@@ -385,7 +153,6 @@ if run:
         str(calibrated.hour),
     ]
 
-    # 1) 组装 bazi.py 参数（完全不改动源程序，只传参运行）
     if cal_type == "公历":
         args = ["-g"] + args
     if sex == "女":
@@ -393,42 +160,18 @@ if run:
     if cal_type == "农历" and is_leap:
         args = ["-r"] + args
 
-    # 2) 运行 bazi.py（黑盒）
     raw = run_bazi_py("bazi.py", args)
 
     tab1, tab2, tab3 = st.tabs(["📈 人生K线", "🧾 大运流年表", "🖨️ 原始输出"])
 
     solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
     st.caption(
-        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
+        f"出生地时间 {local_dt.year}-{local_dt.month:02d}-{local_dt.day:02d} {local_dt.hour:02d}:00 在 {tz_label} 校准为北京时间 "
         f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
     )
 
-    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
-    st.caption(
-        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
-        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
-    )
-
-    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
-    st.caption(
-        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
-        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
-    )
-
-    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
-    st.caption(
-        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
-        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
-    )
-
-    st.caption(
-        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
-        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00。"
-    )
-
-    # 3) 解析大运/流年
     df_dayun, df_liunian = parse_dayun_liunian(raw)
+    df_dayun = df_dayun.sort_values("start_age").reset_index(drop=True)
     df_liunian = df_liunian.sort_values("year").reset_index(drop=True)
 
     with tab3:
@@ -439,21 +182,28 @@ if run:
         st.error("未解析到流年数据：请把 tab3 的原始输出里流年段落贴出来，我帮你把正则规则一次对齐。")
         st.stop()
 
-    # 4) 构造一个“可解释”的年信号（示例：周期性起落；你后续替换成真正命理映射）
-    years = df_liunian["year"].tolist()
-    sig = {}
-    for i, y in enumerate(years):
-        phase = i % cycle
-        sig[y] = (up if phase < cycle/2 else -down)
-    year_signal = pd.Series(sig)
+    year_signal = build_year_signal(
+        df_liunian,
+        df_dayun,
+        base_up=up,
+        base_down=down,
+        cycle=cycle,
+        boost={k: v * keyword_boost for k, v in DEFAULT_BOOST.items()},
+        risk={k: v * keyword_risk for k, v in DEFAULT_RISK.items()},
+        dayun_risk_weight=dayun_drag,
+        strength_index=strength_index,
+        special_pattern=special_pattern,
+        relation_trigger=relation_trigger,
+        ten_god_weight=ten_god_weight,
+    )
 
     life = build_life_index(df_liunian, year_signal, base=base)
-    life["ma5"] = life["life_index"].rolling(window=5, min_periods=1).mean()
-    life["ma10"] = life["life_index"].rolling(window=10, min_periods=1).mean()
+    life["ma_short"] = life["life_index"].rolling(window=ma_short, min_periods=1).mean()
+    life["ma_long"] = life["life_index"].rolling(window=ma_long, min_periods=1).mean()
 
     ohlc = to_decade_ohlc(life)
-    ohlc["ma2"] = ohlc["close"].rolling(window=2, min_periods=1).mean()
-    ohlc["ma3"] = ohlc["close"].rolling(window=3, min_periods=1).mean()
+    ohlc["ma_short"] = ohlc["close"].rolling(window=ma_decade_short, min_periods=1).mean()
+    ohlc["ma_long"] = ohlc["close"].rolling(window=ma_decade_long, min_periods=1).mean()
 
     with tab1:
         auto_marks = pd.concat([life.nlargest(2, "life_index"), life.nsmallest(2, "life_index")])
@@ -465,35 +215,102 @@ if run:
         )
 
         st.subheader("人生K线（按十年聚合）")
-        fig = go.Figure(data=[go.Candlestick(
-            x=ohlc["decade"].astype(str),
-            open=ohlc["open"], high=ohlc["high"], low=ohlc["low"], close=ohlc["close"],
-            increasing_line_color="#e74c3c", decreasing_line_color="#2ecc71",
-        )])
-        fig.add_trace(go.Scatter(x=ohlc["decade"].astype(str), y=ohlc["ma2"], mode="lines", name="MA2(十年)", line=dict(color="#f1c40f")))
-        fig.add_trace(go.Scatter(x=ohlc["decade"].astype(str), y=ohlc["ma3"], mode="lines", name="MA3(十年)", line=dict(color="#3498db")))
-        fig.update_layout(height=520, xaxis_title="年代段", yaxis_title="LifeIndex", xaxis_rangeslider_visible=True, hovermode="x unified")
+        fig = go.Figure(data=[
+            go.Candlestick(
+                x=ohlc["decade"].astype(str),
+                open=ohlc["open"],
+                high=ohlc["high"],
+                low=ohlc["low"],
+                close=ohlc["close"],
+                increasing_line_color="#f5a87f",
+                decreasing_line_color="#7bc8a4",
+                whiskerwidth=0.4,
+                hovertemplate="年代段 %{x}<br>开盘 %{open:.2f}<br>最高 %{high:.2f}<br>最低 %{low:.2f}<br>收盘 %{close:.2f}<extra></extra>",
+            )
+        ])
+        fig.add_trace(
+            go.Scatter(
+                x=ohlc["decade"].astype(str),
+                y=ohlc["ma_short"],
+                mode="lines",
+                name=f"MA{ma_decade_short}(十年)",
+                line=dict(color="#f7d794", width=3),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=ohlc["decade"].astype(str),
+                y=ohlc["ma_long"],
+                mode="lines",
+                name=f"MA{ma_decade_long}(十年)",
+                line=dict(color="#778beb", width=2, dash="dash"),
+            )
+        )
+        fig.update_layout(
+            height=520,
+            xaxis_title="年代段",
+            yaxis_title="LifeIndex",
+            xaxis_rangeslider_visible=True,
+            hovermode="x unified",
+            template="simple_white",
+            margin=dict(l=40, r=20, t=30, b=30),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("逐年曲线（更细）")
+        st.subheader("逐年曲线（含均线与标记）")
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=life["year"], y=life["life_index"], mode="lines", name="LifeIndex"))
-        fig2.add_trace(go.Scatter(x=life["year"], y=life["ma5"], mode="lines", name="MA5", line=dict(color="#f39c12", dash="dot")))
-        fig2.add_trace(go.Scatter(x=life["year"], y=life["ma10"], mode="lines", name="MA10", line=dict(color="#1abc9c", dash="dash")))
+        fig2.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["life_index"],
+                mode="lines",
+                name="LifeIndex",
+                line=dict(color="#5b8a72", width=3),
+            )
+        )
+        fig2.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["ma_short"],
+                mode="lines",
+                name=f"MA{ma_short}",
+                line=dict(color="#f5a87f", dash="dot", width=2),
+            )
+        )
+        fig2.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["ma_long"],
+                mode="lines",
+                name=f"MA{ma_long}",
+                line=dict(color="#778beb", dash="dash"),
+            )
+        )
 
         marks = life[life["year"].isin(important_years)]
         if not marks.empty:
-            fig2.add_trace(go.Scatter(
-                x=marks["year"],
-                y=marks["life_index"],
-                mode="markers+text",
-                name="重要年份",
-                marker=dict(size=10, color="#e74c3c"),
-                text=[f"{y}" for y in marks["year"]],
-                textposition="top center",
-            ))
+            fig2.add_trace(
+                go.Scatter(
+                    x=marks["year"],
+                    y=marks["life_index"],
+                    mode="markers+text",
+                    name="重要年份",
+                    marker=dict(size=11, color="#e27d60", line=dict(width=1, color="#ffffff")),
+                    text=[f"{y}" for y in marks["year"]],
+                    textposition="top center",
+                )
+            )
+            for y in marks["year"].tolist():
+                fig2.add_vline(x=y, line_dash="dot", line_color="#e27d60", opacity=0.25)
 
-        fig2.update_layout(height=420, xaxis_title="年份", yaxis_title="LifeIndex", hovermode="x unified")
+        fig2.update_layout(
+            height=420,
+            xaxis_title="年份",
+            yaxis_title="LifeIndex",
+            hovermode="x unified",
+            template="simple_white",
+            margin=dict(l=40, r=20, t=20, b=30),
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
     with tab2:
@@ -501,7 +318,7 @@ if run:
         st.dataframe(df_dayun, use_container_width=True, hide_index=True)
         st.subheader("流年")
         st.dataframe(
-            life[["age", "year", "gz", "year_signal", "life_index"]],
+            life[["age", "year", "gz", "desc", "year_signal", "life_index"]],
             use_container_width=True,
             hide_index=True,
         )
