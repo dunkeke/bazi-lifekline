@@ -12,16 +12,19 @@ DEFAULT_WEIGHTS = {
 def build_life_index(liunian_df: pd.DataFrame, year_signal: pd.Series, base=100.0):
     """
     year_signal: 每年一个分数（正=上行，负=回撤），index=year
+    以年份升序保证“逐年累计”与表格展示一致，并把信号数值回填到输出中便于校验。
     """
-    years = liunian_df["year"].values
+    liunian_df = liunian_df.sort_values("year").copy()
+    liunian_df["year_signal"] = liunian_df["year"].map(year_signal).fillna(0.0)
+
     vals = []
     v = base
-    for y in years:
-        v = v * (1.0 + float(year_signal.get(y, 0.0))/100.0)
+    for y, sig in zip(liunian_df["year"], liunian_df["year_signal"]):
+        v = v * (1.0 + float(sig) / 100.0)
         vals.append(v)
-    out = liunian_df.copy()
-    out["life_index"] = vals
-    return out
+
+    liunian_df["life_index"] = vals
+    return liunian_df
 
 def to_decade_ohlc(life_df: pd.DataFrame):
     """
