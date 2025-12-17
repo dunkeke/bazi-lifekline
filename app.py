@@ -1,4 +1,5 @@
 import datetime as dt
+import math
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
@@ -7,6 +8,63 @@ import streamlit as st
 
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import build_life_index, to_decade_ohlc
+
+
+LOCATION_TIMEZONES = {
+    "北京 (UTC+08:00)": "Asia/Shanghai",
+    "伦敦 (UTC+00:00)": "Europe/London",
+    "纽约 (UTC-05:00)": "America/New_York",
+    "悉尼 (UTC+10:00)": "Australia/Sydney",
+    "自定义偏移": "custom",
+}
+
+
+def _equation_of_time_minutes(date_obj: dt.date) -> float:
+    """NOAA 近似公式，返回分钟偏移（真太阳 - 平太阳）。"""
+
+    n = date_obj.timetuple().tm_yday
+    b = math.radians((360 / 365) * (n - 81))
+    return 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+
+
+def to_beijing_time(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    tz_label: str,
+    offset_hours: float,
+    use_true_solar: bool = False,
+    longitude: float = 116.407,
+):
+    """
+    校准出生地时间到北京时区，避免跨日误差，并可选真太阳时矫正。
+
+    use_true_solar: 是否从标准时换算到真太阳时（需提供经度）。
+    longitude: 经度（东经为正，西经为负），用来修正地方时。
+    """
+
+    def _as_timezone(base_dt: dt.datetime):
+        tz_value = LOCATION_TIMEZONES.get(tz_label, tz_label)
+        if tz_value == "custom":
+            return base_dt.replace(tzinfo=dt.timezone(dt.timedelta(hours=offset_hours)))
+        try:
+            return base_dt.replace(tzinfo=ZoneInfo(tz_value))
+        except ZoneInfoNotFoundError:
+            return base_dt.replace(tzinfo=dt.timezone.utc)
+
+    local_dt = _as_timezone(dt.datetime(year, month, day, hour))
+    solar_delta_minutes = 0.0
+
+    if use_true_solar:
+        tz_offset_hours = (local_dt.utcoffset().total_seconds() / 3600.0) if local_dt.utcoffset() else 0.0
+        standard_meridian = tz_offset_hours * 15
+        eq_time = _equation_of_time_minutes(local_dt.date())
+        solar_delta_minutes = 4 * (longitude - standard_meridian) + eq_time
+        local_dt = local_dt + dt.timedelta(minutes=solar_delta_minutes)
+
+    beijing_dt = local_dt.astimezone(ZoneInfo("Asia/Shanghai"))
+    return beijing_dt, solar_delta_minutes
 
 
 LOCATION_TIMEZONES = {
@@ -50,6 +108,21 @@ with st.sidebar:
     tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0)
     offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
 
+    st.markdown("### 真太阳时校准")
+    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
+    longitude = st.number_input(
+        "出生地经度 (东经+/西经-)",
+        min_value=-180.0,
+        max_value=180.0,
+        value=116.407,
+        step=0.5,
+        help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
+    )
+
+    st.markdown("### 出生地校准（北京时间基准）")
+    tz_label = st.selectbox("选择出生地/时区", list(LOCATION_TIMEZONES.keys()), index=0)
+    offset = st.slider("自定义偏移（小时）", -12.0, 14.0, 8.0, 0.5, help="仅在选择“自定义偏移”时生效")
+
     sex = st.radio("性别", ["男", "女"], horizontal=True)
     is_leap = st.checkbox("农历闰月（仅农历有效）", value=False)
 
@@ -65,7 +138,9 @@ with st.sidebar:
 run = st.button("开始批算 + 可视化", type="primary")
 
 if run:
-    calibrated = to_beijing_time(int(year), int(month), int(day), int(hour), tz_label, offset)
+    calibrated, solar_delta = to_beijing_time(
+        int(year), int(month), int(day), int(hour), tz_label, offset, use_true_solar, longitude
+    )
     args = [
         str(calibrated.year),
         str(calibrated.month),
@@ -85,6 +160,12 @@ if run:
     raw = run_bazi_py("bazi.py", args)
 
     tab1, tab2, tab3 = st.tabs(["📈 人生K线", "🧾 大运流年表", "🖨️ 原始输出"])
+
+    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
+    st.caption(
+        f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
+        f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
+    )
 
     st.caption(
         f"出生地时间 {int(year)}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00 在 {tz_label} 校准为北京时间 "
