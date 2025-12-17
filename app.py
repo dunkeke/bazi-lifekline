@@ -93,6 +93,7 @@ if run:
 
     # 3) 解析大运/流年
     df_dayun, df_liunian = parse_dayun_liunian(raw)
+    df_liunian = df_liunian.sort_values("year").reset_index(drop=True)
 
     with tab3:
         st.subheader("bazi.py 原始输出（用于校验解析）")
@@ -163,4 +164,8 @@ if run:
         st.subheader("大运")
         st.dataframe(df_dayun, use_container_width=True, hide_index=True)
         st.subheader("流年")
-        st.dataframe(life[["age","year","gz","life_index"]], use_container_width=True, hide_index=True)
+        st.dataframe(
+            life[["age", "year", "gz", "year_signal", "life_index"]],
+            use_container_width=True,
+            hide_index=True,
+        )
