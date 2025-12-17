@@ -27,26 +27,26 @@ def run_bazi_py(py_path: str, args: list[str]) -> str:
 # 示例流年行格式（需与你 bazi.py 输出微调一次即可）
 # 年龄  年份  干支  ...其它说明
 RE_LIUNIAN = re.compile(
-    r'^\s*(\d+)\s+(\d{4})\s+([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥]).*$',
+    r'^\s*(\d+)\s+(\d{4})\s+([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥])\s*(.*)$',
     re.M
 )
 
 # 示例大运行格式
 RE_DAYUN = re.compile(
-    r'^\s*(\d+)\s+([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥]).*$',
+    r'^\s*(\d+)\s+([甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥])\s*(.*)$',
     re.M
 )
 
 
 def parse_dayun_liunian(text: str):
     dayun = [
-        {"start_age": int(a), "gz": gz}
-        for a, gz in RE_DAYUN.findall(text)
+        {"start_age": int(a), "gz": gz, "desc": desc.strip()}
+        for a, gz, desc in RE_DAYUN.findall(text)
     ]
 
     liunian = [
-        {"age": int(a), "year": int(y), "gz": gz}
-        for a, y, gz in RE_LIUNIAN.findall(text)
+        {"age": int(a), "year": int(y), "gz": gz, "desc": desc.strip()}
+        for a, y, gz, desc in RE_LIUNIAN.findall(text)
     ]
 
     return pd.DataFrame(dayun), pd.DataFrame(liunian)
