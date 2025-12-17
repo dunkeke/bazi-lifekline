@@ -1,7 +1,11 @@
 import datetime as dt
 import math
 from typing import Tuple
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
+except ImportError:  # Python < 3.9 fallback
+    from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
 
 import pandas as pd
 import plotly.graph_objects as go
