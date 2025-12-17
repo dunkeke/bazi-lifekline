@@ -8,7 +8,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
-from score_model import build_life_index, to_decade_ohlc
+from score_model import (
+    DEFAULT_BOOST,
+    DEFAULT_RISK,
+    build_life_index,
+    build_year_signal,
+    to_decade_ohlc,
+)
 
 # 常见城市的时区与经度，便于做真太阳时矫正
 LOCATIONS = {
@@ -111,15 +117,18 @@ with st.sidebar:
     is_leap = st.checkbox("农历闰月（仅农历有效）", value=False)
 
     st.divider()
-    st.header("人生指数映射（可调）")
+    st.header("评分与指数映射（可调）")
     base = st.number_input("指数起点", min_value=10.0, max_value=1000.0, value=100.0, step=10.0)
-    up = st.slider("上行年 +%", 0.0, 5.0, 1.2, 0.1)
-    down = st.slider("回撤年 -%", 0.0, 5.0, 1.0, 0.1)
-    cycle = st.slider("周期(年)", 2, 12, 6, 1)
-    ma_short = st.slider("逐年短期均线", 2, 10, 5, 1)
-    ma_long = st.slider("逐年长期均线", 5, 20, 10, 1)
+    up = st.slider("基准上行年 +%", 0.0, 5.0, 1.2, 0.1)
+    down = st.slider("基准回撤年 -%", 0.0, 5.0, 1.0, 0.1)
+    cycle = st.slider("周期(年)", 2, 12, 6, 1, help="用于构造波段节奏，结合刑冲破害进行修正")
+    keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 0.6, 0.1)
+    keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 1.0, 0.1)
+    dayun_drag = st.slider("大运凶象拖累", 0.0, 2.0, 0.6, 0.1)
+    ma_short = st.slider("逐年短期均线", 2, 10, 4, 1)
+    ma_long = st.slider("逐年长期均线", 5, 20, 9, 1)
     ma_decade_short = st.slider("十年均线1", 2, 6, 2, 1)
-    ma_decade_long = st.slider("十年均线2", 2, 10, 3, 1)
+    ma_decade_long = st.slider("十年均线2", 2, 10, 4, 1)
 
 run = st.button("开始批算 + 可视化", type="primary")
 
@@ -152,6 +161,7 @@ if run:
     )
 
     df_dayun, df_liunian = parse_dayun_liunian(raw)
+    df_dayun = df_dayun.sort_values("start_age").reset_index(drop=True)
     df_liunian = df_liunian.sort_values("year").reset_index(drop=True)
 
     with tab3:
@@ -162,12 +172,16 @@ if run:
         st.error("未解析到流年数据：请把 tab3 的原始输出里流年段落贴出来，我帮你把正则规则一次对齐。")
         st.stop()
 
-    years = df_liunian["year"].tolist()
-    sig = {}
-    for i, y in enumerate(years):
-        phase = i % cycle
-        sig[y] = (up if phase < cycle / 2 else -down)
-    year_signal = pd.Series(sig)
+    year_signal = build_year_signal(
+        df_liunian,
+        df_dayun,
+        base_up=up,
+        base_down=down,
+        cycle=cycle,
+        boost={k: v * keyword_boost for k, v in DEFAULT_BOOST.items()},
+        risk={k: v * keyword_risk for k, v in DEFAULT_RISK.items()},
+        dayun_risk_weight=dayun_drag,
+    )
 
     life = build_life_index(df_liunian, year_signal, base=base)
     life["ma_short"] = life["life_index"].rolling(window=ma_short, min_periods=1).mean()
@@ -194,8 +208,9 @@ if run:
                 high=ohlc["high"],
                 low=ohlc["low"],
                 close=ohlc["close"],
-                increasing_line_color="#e74c3c",
-                decreasing_line_color="#2ecc71",
+                increasing_line_color="#f5a87f",
+                decreasing_line_color="#7bc8a4",
+                whiskerwidth=0.4,
                 hovertemplate="年代段 %{x}<br>开盘 %{open:.2f}<br>最高 %{high:.2f}<br>最低 %{low:.2f}<br>收盘 %{close:.2f}<extra></extra>",
             )
         ])
@@ -205,7 +220,7 @@ if run:
                 y=ohlc["ma_short"],
                 mode="lines",
                 name=f"MA{ma_decade_short}(十年)",
-                line=dict(color="#f1c40f"),
+                line=dict(color="#f7d794", width=3),
             )
         )
         fig.add_trace(
@@ -214,22 +229,38 @@ if run:
                 y=ohlc["ma_long"],
                 mode="lines",
                 name=f"MA{ma_decade_long}(十年)",
-                line=dict(color="#3498db"),
+                line=dict(color="#778beb", width=2, dash="dash"),
             )
         )
-        fig.update_layout(height=520, xaxis_title="年代段", yaxis_title="LifeIndex", xaxis_rangeslider_visible=True, hovermode="x unified")
+        fig.update_layout(
+            height=520,
+            xaxis_title="年代段",
+            yaxis_title="LifeIndex",
+            xaxis_rangeslider_visible=True,
+            hovermode="x unified",
+            template="simple_white",
+            margin=dict(l=40, r=20, t=30, b=30),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("逐年曲线（含均线与标记）")
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=life["year"], y=life["life_index"], mode="lines", name="LifeIndex"))
+        fig2.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["life_index"],
+                mode="lines",
+                name="LifeIndex",
+                line=dict(color="#5b8a72", width=3),
+            )
+        )
         fig2.add_trace(
             go.Scatter(
                 x=life["year"],
                 y=life["ma_short"],
                 mode="lines",
                 name=f"MA{ma_short}",
-                line=dict(color="#f39c12", dash="dot"),
+                line=dict(color="#f5a87f", dash="dot", width=2),
             )
         )
         fig2.add_trace(
@@ -238,7 +269,7 @@ if run:
                 y=life["ma_long"],
                 mode="lines",
                 name=f"MA{ma_long}",
-                line=dict(color="#1abc9c", dash="dash"),
+                line=dict(color="#778beb", dash="dash"),
             )
         )
 
@@ -250,15 +281,22 @@ if run:
                     y=marks["life_index"],
                     mode="markers+text",
                     name="重要年份",
-                    marker=dict(size=10, color="#e74c3c"),
+                    marker=dict(size=11, color="#e27d60", line=dict(width=1, color="#ffffff")),
                     text=[f"{y}" for y in marks["year"]],
                     textposition="top center",
                 )
             )
             for y in marks["year"].tolist():
-                fig2.add_vline(x=y, line_dash="dot", line_color="#e74c3c", opacity=0.3)
+                fig2.add_vline(x=y, line_dash="dot", line_color="#e27d60", opacity=0.25)
 
-        fig2.update_layout(height=420, xaxis_title="年份", yaxis_title="LifeIndex", hovermode="x unified")
+        fig2.update_layout(
+            height=420,
+            xaxis_title="年份",
+            yaxis_title="LifeIndex",
+            hovermode="x unified",
+            template="simple_white",
+            margin=dict(l=40, r=20, t=20, b=30),
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
     with tab2:
@@ -266,7 +304,7 @@ if run:
         st.dataframe(df_dayun, use_container_width=True, hide_index=True)
         st.subheader("流年")
         st.dataframe(
-            life[["age", "year", "gz", "year_signal", "life_index"]],
+            life[["age", "year", "gz", "desc", "year_signal", "life_index"]],
             use_container_width=True,
             hide_index=True,
         )
