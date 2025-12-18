@@ -16,6 +16,16 @@ from geopy.geocoders import Nominatim
 from openai import OpenAI
 from timezonefinder import TimezoneFinder
 
+try:
+    from geopy.geocoders import Nominatim
+except ImportError:
+    Nominatim = None  # type: ignore
+
+try:
+    from timezonefinder import TimezoneFinder
+except ImportError:
+    TimezoneFinder = None  # type: ignore
+
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
     DEFAULT_BOOST,
@@ -350,6 +360,12 @@ def geocode_location(name: str) -> Tuple[Optional[Tuple[float, float, str]], str
     if not query:
         return None, "请输入地点名称。"
 
+    if Nominatim is None:
+        fallback = LOCAL_CITY_CATALOG.get(query)
+        if fallback:
+            return (fallback["lat"], fallback["lon"], fallback["tz"]), ""
+        return None, "geopy 未安装：请安装 geopy 或使用内置常用城市/手填经度。"
+
     geocode_error = ""
     try:
         geolocator = Nominatim(user_agent="bazi-lifekline")
@@ -367,6 +383,9 @@ def geocode_location(name: str) -> Tuple[Optional[Tuple[float, float, str]], str
         if geocode_error:
             return None, geocode_error
         return None, "未找到对应地点，请尝试更具体的名称或手动输入经度/时区。"
+
+    if TimezoneFinder is None:
+        return None, "经纬度已获取，但缺少 timezonefinder 以确定时区；请安装后重试，或手动选择。"
 
     try:
         tz_finder = TimezoneFinder()
