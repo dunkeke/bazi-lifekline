@@ -382,6 +382,9 @@ with feature_cols[2]:
 
 st.divider()
 
+state = st.session_state
+state.setdefault("bazi_result", None)
+
 with st.sidebar:
     st.header("📜 起局信息")
     cal_type = st.radio("日期类型", ["公历", "农历"], horizontal=True)
@@ -467,9 +470,79 @@ if run:
 
     raw = run_bazi_py("bazi.py", args)
 
+    df_dayun, df_liunian = parse_dayun_liunian(raw)
+    df_dayun = df_dayun.sort_values("start_age").reset_index(drop=True)
+    df_liunian = df_liunian.sort_values("year").reset_index(drop=True)
+
+    if df_liunian.empty:
+        st.error("未解析到流年数据：请把 tab3 的原始输出里流年段落贴出来，我帮你把正则规则一次对齐。")
+        st.stop()
+
+    year_signal = build_year_signal(
+        df_liunian,
+        df_dayun,
+        base_up=up,
+        base_down=down,
+        cycle=cycle,
+        boost={k: v * keyword_boost for k, v in DEFAULT_BOOST.items()},
+        risk={k: v * keyword_risk for k, v in DEFAULT_RISK.items()},
+        dayun_risk_weight=dayun_drag,
+        strength_index=strength_index,
+        special_pattern=special_pattern,
+        relation_trigger=relation_trigger,
+        ten_god_weight=ten_god_weight,
+    )
+
+    life = build_life_index(df_liunian, year_signal, base=base)
+    life["ma_short"] = life["life_index"].rolling(window=ma_short, min_periods=1).mean()
+    life["ma_long"] = life["life_index"].rolling(window=ma_long, min_periods=1).mean()
+
+    ohlc = to_decade_ohlc(life)
+    ohlc["ma_short"] = ohlc["close"].rolling(window=ma_decade_short, min_periods=1).mean()
+    ohlc["ma_long"] = ohlc["close"].rolling(window=ma_decade_long, min_periods=1).mean()
+
+    state["bazi_result"] = {
+        "raw": raw,
+        "df_dayun": df_dayun,
+        "df_liunian": df_liunian,
+        "life": life,
+        "ohlc": ohlc,
+        "calibrated": calibrated,
+        "local_dt": local_dt,
+        "solar_delta": solar_delta,
+        "tz_label": tz_label,
+        "longitude": longitude,
+        "ma_short": ma_short,
+        "ma_long": ma_long,
+        "ma_decade_short": ma_decade_short,
+        "ma_decade_long": ma_decade_long,
+    }
+
+
+result = state.get("bazi_result")
+
+if not result:
+    st.info("请先填写出生信息并点击“揽星起盘 · 开启推演”后查看结果与 AI 解读。")
+
+if result:
+    raw = result["raw"]
+    df_dayun = result["df_dayun"]
+    df_liunian = result["df_liunian"]
+    life = result["life"]
+    ohlc = result["ohlc"]
+    calibrated = result["calibrated"]
+    local_dt = result["local_dt"]
+    solar_delta = result["solar_delta"]
+    tz_label = result["tz_label"]
+    longitude = result["longitude"]
+    ma_short = result["ma_short"]
+    ma_long = result["ma_long"]
+    ma_decade_short = result["ma_decade_short"]
+    ma_decade_long = result["ma_decade_long"]
+
     tab1, tab2, tab3, tab4 = st.tabs(["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读"])
 
-    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
+    solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if solar_delta else ""
     st.caption(
         f"出生地时间 {local_dt.year}-{local_dt.month:02d}-{local_dt.day:02d} {local_dt.hour:02d}:00 在 {tz_label} 校准为北京时间 "
         f"{calibrated.year}-{calibrated.month:02d}-{calibrated.day:02d} {calibrated.hour:02d}:00{solar_note}。"
@@ -502,41 +575,6 @@ if run:
         """,
         unsafe_allow_html=True,
     )
-
-    df_dayun, df_liunian = parse_dayun_liunian(raw)
-    df_dayun = df_dayun.sort_values("start_age").reset_index(drop=True)
-    df_liunian = df_liunian.sort_values("year").reset_index(drop=True)
-
-    with tab3:
-        st.subheader("bazi.py 原始输出（用于校验解析）")
-        st.code(raw, language="text")
-
-    if df_liunian.empty:
-        st.error("未解析到流年数据：请把 tab3 的原始输出里流年段落贴出来，我帮你把正则规则一次对齐。")
-        st.stop()
-
-    year_signal = build_year_signal(
-        df_liunian,
-        df_dayun,
-        base_up=up,
-        base_down=down,
-        cycle=cycle,
-        boost={k: v * keyword_boost for k, v in DEFAULT_BOOST.items()},
-        risk={k: v * keyword_risk for k, v in DEFAULT_RISK.items()},
-        dayun_risk_weight=dayun_drag,
-        strength_index=strength_index,
-        special_pattern=special_pattern,
-        relation_trigger=relation_trigger,
-        ten_god_weight=ten_god_weight,
-    )
-
-    life = build_life_index(df_liunian, year_signal, base=base)
-    life["ma_short"] = life["life_index"].rolling(window=ma_short, min_periods=1).mean()
-    life["ma_long"] = life["life_index"].rolling(window=ma_long, min_periods=1).mean()
-
-    ohlc = to_decade_ohlc(life)
-    ohlc["ma_short"] = ohlc["close"].rolling(window=ma_decade_short, min_periods=1).mean()
-    ohlc["ma_long"] = ohlc["close"].rolling(window=ma_decade_long, min_periods=1).mean()
 
     with tab1:
         st.markdown(
@@ -653,6 +691,10 @@ if run:
             margin=dict(l=40, r=20, t=20, b=30),
         )
         st.plotly_chart(fig2, use_container_width=True)
+
+    with tab3:
+        st.subheader("bazi.py 原始输出（用于校验解析）")
+        st.code(raw, language="text")
 
     with tab2:
         st.markdown(
