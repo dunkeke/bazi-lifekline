@@ -6,3 +6,4 @@ backports.zoneinfo; python_version < "3.9"
 lunar_python
 colorama
 bidict
+openai>=1.55.0
