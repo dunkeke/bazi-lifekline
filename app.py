@@ -1,5 +1,7 @@
 import datetime as dt
+import json
 import math
+import os
 from typing import Tuple
 
 try:
@@ -10,6 +12,7 @@ except ImportError:  # Python < 3.9 fallback
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from openai import OpenAI
 
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
@@ -167,6 +170,130 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption("以“古韵·沉稳”的视觉呈现，保留原有推盘与可视化逻辑，仅焕新体验与名称。")
+
+
+def analyze_bazi_with_deepseek(raw_bazi_output: str, api_key: str) -> str:
+    """
+    通过 DeepSeek（OpenAI 兼容 SDK）对 bazi.py 原始输出进行命理解读。
+    """
+
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    system_prompt = """你是一位精通中国传统八字命理学的专家，擅长从八字排盘中分析人生运势、性格特点和发展方向。
+
+请根据提供的八字排盘原始输出，以专业、客观且富有建设性的方式进行解读，内容包括：
+1. 命盘总览：简要总结八字的基本格局和特点
+2. 五行分析：分析五行强弱、平衡与喜用神
+3. 大运走势：解读大运阶段的运势起伏和关键节点
+4. 流年提示：指出需要注意的关键年份和机遇
+5. 人生建议：基于命理分析给出务实的发展建议
+
+请使用专业但易懂的语言，避免过度玄学化，注重实际指导意义。"""
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"请分析以下八字排盘结果：\n\n{raw_bazi_output}"},
+            ],
+            stream=True,
+            max_tokens=2000,
+            temperature=0.7,
+        )
+
+        parts = []
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
+
+
+def add_deepseek_analysis_tab(raw_bazi_output: str):
+    """
+    在 Streamlit 中渲染 DeepSeek AI 解读入口。
+    """
+
+    st.markdown("### 🧠 AI深度解读：洞悉命理玄机")
+
+    preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        api_key = st.text_input(
+            "DeepSeek API密钥",
+            type="password",
+            value=preset_key,
+            help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
+            placeholder="输入以 sk- 开头的密钥",
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        analyze_button = st.button("开始AI解读", type="secondary")
+
+    with st.expander("ℹ️ 如何获取/使用 DeepSeek API 密钥"):
+        st.markdown(
+            """
+            1. 访问 [DeepSeek 平台](https://platform.deepseek.com/) 注册/登录。
+            2. 在「API Keys」页面创建新的密钥，新用户通常会有免费额度。
+            3. 复制以 `sk-` 开头的密钥，粘贴到上方输入框，或在部署时设置环境变量 `DEEPSEEK_API_KEY`。
+            4. 请求示例：
+            """,
+            unsafe_allow_html=True,
+        )
+        sample_payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": "命理分析专家"},
+                {"role": "user", "content": "请分析以下八字排盘结果：..."},
+            ],
+            "stream": True,
+        }
+        st.code(json.dumps(sample_payload, ensure_ascii=False, indent=2), language="json")
+
+    analysis = None
+    if analyze_button:
+        if not api_key:
+            st.error("请先输入 API 密钥，或在环境变量 DEEPSEEK_API_KEY 中配置。")
+        elif not api_key.startswith("sk-"):
+            st.warning("API 密钥格式似乎不正确，应以 sk- 开头。")
+        else:
+            with st.spinner("🧐 AI 正在深度分析命盘，探寻人生玄机……"):
+                analysis = analyze_bazi_with_deepseek(raw_bazi_output, api_key)
+
+    if analysis:
+        st.markdown("---")
+        st.markdown("### 📜 AI命理分析报告")
+        st.markdown(
+            """
+            <style>
+            .ai-analysis {
+                background: linear-gradient(135deg, #fdfcfb 0%, #f5f7fa 100%);
+                border-left: 4px solid #c79b64;
+                padding: 20px;
+                border-radius: 10px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+                margin: 15px 0;
+            }
+            .ai-analysis p {
+                line-height: 1.7;
+                color: #4b3a28;
+                margin: 0;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        for section in analysis.split("\n\n"):
+            if section.strip():
+                st.markdown(f'<div class="ai-analysis">{section}</div>', unsafe_allow_html=True)
+
+        st.download_button(
+            label="📥 下载分析报告",
+            data=analysis,
+            file_name="八字命理分析报告.txt",
+            mime="text/plain",
+        )
 
 
 def _equation_of_time_minutes(date_obj: dt.date) -> float:
@@ -340,7 +467,7 @@ if run:
 
     raw = run_bazi_py("bazi.py", args)
 
-    tab1, tab2, tab3 = st.tabs(["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读"])
 
     solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if use_true_solar else ""
     st.caption(
@@ -544,3 +671,6 @@ if run:
             use_container_width=True,
             hide_index=True,
         )
+
+    with tab4:
+        add_deepseek_analysis_tab(raw)
