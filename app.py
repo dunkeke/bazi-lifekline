@@ -2,7 +2,7 @@ import datetime as dt
 import json
 import math
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
@@ -13,6 +13,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from openai import OpenAI
+
+try:
+    from geopy.geocoders import Nominatim
+except ImportError:
+    Nominatim = None  # type: ignore
+
+try:
+    from timezonefinder import TimezoneFinder
+except ImportError:
+    TimezoneFinder = None  # type: ignore
 
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
@@ -31,6 +41,17 @@ LOCATIONS = {
     "纽约 (UTC-05:00)": {"tz": "America/New_York", "offset": -5.0, "longitude": -74.006},
     "悉尼 (UTC+10:00)": {"tz": "Australia/Sydney", "offset": 10.0, "longitude": 151.2093},
     "自定义偏移": {"tz": "custom", "offset": 8.0, "longitude": 116.407},
+}
+
+LOCAL_CITY_CATALOG = {
+    "北京": {"lat": 39.9042, "lon": 116.4074, "tz": "Asia/Shanghai"},
+    "Beijing": {"lat": 39.9042, "lon": 116.4074, "tz": "Asia/Shanghai"},
+    "伦敦": {"lat": 51.5074, "lon": -0.1278, "tz": "Europe/London"},
+    "London": {"lat": 51.5074, "lon": -0.1278, "tz": "Europe/London"},
+    "纽约": {"lat": 40.7128, "lon": -74.006, "tz": "America/New_York"},
+    "New York": {"lat": 40.7128, "lon": -74.006, "tz": "America/New_York"},
+    "悉尼": {"lat": -33.8688, "lon": 151.2093, "tz": "Australia/Sydney"},
+    "Sydney": {"lat": -33.8688, "lon": 151.2093, "tz": "Australia/Sydney"},
 }
 
 st.set_page_config(page_title="探索人生起伏，解锁命理奥秘", layout="wide", page_icon="📜")
@@ -314,6 +335,68 @@ def _resolve_timezone(tz_label: str, offset_hours: float) -> dt.tzinfo:
         return dt.timezone.utc
 
 
+def _calculate_offset_hours(tz_name: str) -> float:
+    """
+    将时区转换为当前（本地日期）的小时偏移，便于预填自定义偏移。
+    """
+
+    try:
+        tz_info = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        return 8.0
+
+    offset = dt.datetime.now(tz_info).utcoffset()
+    return round((offset.total_seconds() / 3600.0) if offset else 0.0, 2)
+
+
+def geocode_location(name: str) -> Tuple[Optional[Tuple[float, float, str]], str]:
+    """
+    使用 geopy/Nominatim 解析地点，返回 (lat, lon, timezone)。
+    """
+
+    query = name.strip()
+    if not query:
+        return None, "请输入地点名称。"
+
+    if Nominatim is None:
+        fallback = LOCAL_CITY_CATALOG.get(query)
+        if fallback:
+            return (fallback["lat"], fallback["lon"], fallback["tz"]), ""
+        return None, "geopy 未安装：请安装 geopy 或使用内置常用城市/手填经度。"
+
+    geocode_error = ""
+    try:
+        geolocator = Nominatim(user_agent="bazi-lifekline")
+        location = geolocator.geocode(query, language="zh", addressdetails=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        location = None
+        geocode_error = f"地理解析失败：{exc}"
+
+    if location:
+        lat, lon = location.latitude, location.longitude
+    else:
+        fallback = LOCAL_CITY_CATALOG.get(query)
+        if fallback:
+            return (fallback["lat"], fallback["lon"], fallback["tz"]), ""
+        if geocode_error:
+            return None, geocode_error
+        return None, "未找到对应地点，请尝试更具体的名称或手动输入经度/时区。"
+
+    if TimezoneFinder is None:
+        return None, "经纬度已获取，但缺少 timezonefinder 以确定时区；请安装后重试，或手动选择。"
+
+    try:
+        tz_finder = TimezoneFinder()
+        tz_name = tz_finder.timezone_at(lng=lon, lat=lat) or tz_finder.closest_timezone_at(lng=lon, lat=lat)
+    except Exception as exc:  # noqa: BLE001
+        return None, f"经纬度获取成功，但时区识别失败：{exc}"
+
+    if not tz_name:
+        return None, "经纬度已获取，但无法匹配时区，请手动选择。"
+
+    return (lat, lon, tz_name), ""
+
+
 def to_beijing_time(
     year: int,
     month: int,
@@ -384,6 +467,8 @@ st.divider()
 
 state = st.session_state
 state.setdefault("bazi_result", None)
+state.setdefault("offset_source", "auto")
+state.setdefault("longitude_source", "auto")
 
 with st.sidebar:
     st.header("📜 起局信息")
@@ -394,27 +479,84 @@ with st.sidebar:
     hour = st.number_input("时(0-23)", min_value=0, max_value=23, value=12)
 
     st.markdown("### 📍 出生地校准（北京时间基准）")
-    tz_label = st.selectbox("选择出生地/时区", list(LOCATIONS.keys()), index=0)
-    default_offset = LOCATIONS.get(tz_label, {}).get("offset", 8.0)
-    offset = st.slider(
-        "自定义偏移（小时）",
-        -12.0,
-        14.0,
-        default_offset,
-        0.5,
-        help="仅在选择“自定义偏移”时生效",
+    tz_options = list(LOCATIONS.keys())
+    parsed_timezone = state.get("parsed_timezone")
+    if parsed_timezone and parsed_timezone not in tz_options:
+        tz_options.append(parsed_timezone)
+    if "tz_label" in state and state["tz_label"] not in tz_options:
+        state["tz_label"] = tz_options[0]
+    tz_label = st.selectbox(
+        "选择出生地/时区",
+        tz_options,
+        index=tz_options.index(state.get("tz_label", tz_options[0])) if tz_options else 0,
+        key="tz_label",
     )
 
-    st.markdown("### 🌞 真太阳时校准")
-    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
+    default_offset = LOCATIONS.get(tz_label, {}).get("offset", _calculate_offset_hours(tz_label))
     default_longitude = LOCATIONS.get(tz_label, {}).get("longitude", 116.407)
+    tz_set_by_geocode = state.pop("tz_set_by_geocode", False)
+    previous_tz_label = state.get("previous_tz_label")
+    if "offset_hours" not in state:
+        state["offset_hours"] = float(default_offset)
+    if "longitude_value" not in state:
+        state["longitude_value"] = float(default_longitude)
+    if previous_tz_label and previous_tz_label != tz_label and not tz_set_by_geocode:
+        state["offset_hours"] = float(default_offset)
+        state["longitude_value"] = float(default_longitude)
+        state["offset_source"] = "auto"
+        state["longitude_source"] = "auto"
+    state["previous_tz_label"] = tz_label
+
+    st.markdown("### 🌞 真太阳时校准")
+    location_query = st.text_input(
+        "地点名称（自动带入经度/时区）",
+        key="location_query",
+        placeholder="如：北京三里屯 / 纽约曼哈顿 / 悉尼歌剧院",
+        help="解析成功将覆盖下方经度，并尝试填充时区与偏移。",
+    )
+    parse_location = st.button("解析")
+    if parse_location:
+        parsed_location, geo_error = geocode_location(location_query)
+        if parsed_location:
+            lat, lon, tz_name = parsed_location
+            state["geo_feedback"] = f"解析成功：{location_query} · 纬度 {lat:.4f} · 经度 {lon:.4f} · 时区 {tz_name}"
+            state["geo_error"] = ""
+            state["parsed_latitude"] = lat
+            state["parsed_timezone"] = tz_name
+            state["longitude_value"] = round(lon, 4)
+            state["longitude_source"] = "geocode"
+            state["tz_label"] = tz_name
+            state["tz_set_by_geocode"] = True
+            offset_hours = _calculate_offset_hours(tz_name)
+            state["offset_hours"] = offset_hours
+            state["offset_source"] = "geocode"
+        else:
+            state["geo_error"] = geo_error
+            state["geo_feedback"] = ""
+
+    if state.get("geo_feedback"):
+        st.success(state["geo_feedback"])
+    elif state.get("geo_error"):
+        st.warning(state["geo_error"])
+
+    tz_label = state.get("tz_label", tz_label)
+    use_true_solar = st.checkbox("使用真太阳时（需要经度）", value=False)
     longitude = st.number_input(
         "出生地经度 (东经+/西经-)",
         min_value=-180.0,
         max_value=180.0,
-        value=float(default_longitude),
+        value=float(state.get("longitude_value", default_longitude)),
         step=0.5,
         help="默认北京经度 116.407°，勾选后按公式换算真太阳时",
+    )
+    offset = st.slider(
+        "自定义偏移（小时）",
+        -12.0,
+        14.0,
+        float(state.get("offset_hours", default_offset)),
+        0.5,
+        help="仅在选择“自定义偏移”时生效",
+        key="offset_hours",
     )
 
     sex = st.radio("性别", ["男", "女"], horizontal=True)
