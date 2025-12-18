@@ -26,6 +26,16 @@ try:
 except ImportError:
     TimezoneFinder = None  # type: ignore
 
+try:
+    from geopy.geocoders import Nominatim
+except ImportError:
+    Nominatim = None  # type: ignore
+
+try:
+    from timezonefinder import TimezoneFinder
+except ImportError:
+    TimezoneFinder = None  # type: ignore
+
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
     DEFAULT_BOOST,
@@ -471,6 +481,14 @@ state = st.session_state
 state.setdefault("bazi_result", None)
 state.setdefault("offset_source", "auto")
 state.setdefault("longitude_source", "auto")
+state.setdefault("tz_label", list(LOCATIONS.keys())[0])
+
+if "pending_tz_label" in state:
+    state["tz_label"] = state.pop("pending_tz_label")
+if "pending_longitude" in state:
+    state["longitude_value"] = state.pop("pending_longitude")
+if "pending_offset_hours" in state:
+    state["offset_hours"] = state.pop("pending_offset_hours")
 
 with st.sidebar:
     st.header("📜 起局信息")
@@ -525,13 +543,14 @@ with st.sidebar:
             state["geo_error"] = ""
             state["parsed_latitude"] = lat
             state["parsed_timezone"] = tz_name
-            state["longitude_value"] = round(lon, 4)
+            state["pending_longitude"] = round(lon, 4)
             state["longitude_source"] = "geocode"
-            state["tz_label"] = tz_name
+            state["pending_tz_label"] = tz_name
             state["tz_set_by_geocode"] = True
             offset_hours = _calculate_offset_hours(tz_name)
-            state["offset_hours"] = offset_hours
+            state["pending_offset_hours"] = offset_hours
             state["offset_source"] = "geocode"
+            st.experimental_rerun()
         else:
             state["geo_error"] = geo_error
             state["geo_feedback"] = ""
