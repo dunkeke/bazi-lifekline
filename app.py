@@ -36,6 +36,16 @@ try:
 except ImportError:
     TimezoneFinder = None  # type: ignore
 
+try:
+    from geopy.geocoders import Nominatim
+except ImportError:
+    Nominatim = None  # type: ignore
+
+try:
+    from timezonefinder import TimezoneFinder
+except ImportError:
+    TimezoneFinder = None  # type: ignore
+
 from parse_bazi_output import parse_dayun_liunian, run_bazi_py
 from score_model import (
     DEFAULT_BOOST,
@@ -550,7 +560,6 @@ with st.sidebar:
             offset_hours = _calculate_offset_hours(tz_name)
             state["pending_offset_hours"] = offset_hours
             state["offset_source"] = "geocode"
-            st.experimental_rerun()
         else:
             state["geo_error"] = geo_error
             state["geo_feedback"] = ""
