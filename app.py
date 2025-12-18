@@ -12,7 +12,9 @@ except ImportError:  # Python < 3.9 fallback
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from geopy.geocoders import Nominatim
 from openai import OpenAI
+from timezonefinder import TimezoneFinder
 
 try:
     from geopy.geocoders import Nominatim
