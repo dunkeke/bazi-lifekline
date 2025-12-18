@@ -434,8 +434,8 @@ with st.sidebar:
     keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 0.6, 0.1)
     keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 1.0, 0.1)
     dayun_drag = st.slider("大运凶象拖累", 0.0, 2.0, 0.6, 0.1)
-    ma_short = st.slider("逐年短期均线", 2, 10, 4, 1)
-    ma_long = st.slider("逐年长期均线", 5, 20, 9, 1)
+    ma_short = st.slider("逐年短期均线", 1, 10, 4, 1)
+    ma_long = st.slider("逐年长期均线", 1, 20, 9, 1)
     ma_decade_short = st.slider("十年均线1", 2, 6, 2, 1)
     ma_decade_long = st.slider("十年均线2", 2, 10, 4, 1)
 
@@ -705,6 +705,78 @@ if result:
             """,
             unsafe_allow_html=True,
         )
+        st.subheader("年运轨迹（当均线窗口=1 时更贴合逐年走势）")
+        decade_bands = sorted(set(life["year"] // 10))
+        fig_track = go.Figure()
+        for decade in decade_bands:
+            start = decade * 10
+            end = start + 9
+            fig_track.add_vrect(
+                x0=start - 0.5,
+                x1=end + 0.5,
+                fillcolor="rgba(199,155,100,0.06)" if decade % 2 == 0 else "rgba(120,139,235,0.05)",
+                line_width=0,
+                layer="below",
+            )
+        fig_track.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["life_index"],
+                mode="lines+markers",
+                name="年运轨迹",
+                line=dict(
+                    width=3,
+                    color=life["year_signal"],
+                    colorscale="RdYlGn",
+                    colorbar=dict(title="年信号", tickformat="+.1f"),
+                ),
+                marker=dict(
+                    size=9,
+                    color=life["life_index"],
+                    colorscale="YlGnBu",
+                    showscale=False,
+                    line=dict(width=0.5, color="#ffffff"),
+                ),
+                hovertemplate="年份 %{x}<br>LifeIndex %{y:.2f}<br>年信号 %{customdata:.2f}<extra></extra>",
+                customdata=life["year_signal"],
+            )
+        )
+        fig_track.add_trace(
+            go.Scatter(
+                x=life["year"],
+                y=life["life_index"],
+                mode="lines",
+                line=dict(shape="spline", color="rgba(199,155,100,0.35)", width=0),
+                fill="tozeroy",
+                fillcolor="rgba(199,155,100,0.12)",
+                name="底色",
+                hoverinfo="skip",
+            )
+        )
+        peaks = pd.concat([life.nlargest(1, "life_index"), life.nsmallest(1, "life_index")])
+        if not peaks.empty:
+            fig_track.add_trace(
+                go.Scatter(
+                    x=peaks["year"],
+                    y=peaks["life_index"],
+                    mode="markers+text",
+                    name="极值标记",
+                    marker=dict(size=13, color="#e27d60", symbol="diamond", line=dict(width=1, color="#ffffff")),
+                    text=[f"{y}" for y in peaks["year"]],
+                    textposition="top center",
+                    hovertemplate="年份 %{x}<br>LifeIndex %{y:.2f}<extra></extra>",
+                )
+            )
+        fig_track.update_layout(
+            height=420,
+            xaxis_title="年份",
+            yaxis_title="LifeIndex",
+            hovermode="x unified",
+            template="simple_white",
+            margin=dict(l=40, r=20, t=10, b=30),
+        )
+        st.plotly_chart(fig_track, use_container_width=True)
+
         st.subheader("大运")
         st.dataframe(df_dayun, use_container_width=True, hide_index=True)
         st.subheader("流年")
