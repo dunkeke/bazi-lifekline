@@ -112,7 +112,10 @@ def compute_strength_index(features: Dict[str, float]) -> float:
 
 
 def blend_ten_god_weights(
-    strength_index: float, special_pattern: Optional[Dict[str, float]] = None
+    strength_index: float,
+    special_pattern: Optional[Dict[str, float]] = None,
+    strong_weights: Optional[Dict[str, float]] = None,
+    weak_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     按日主强度 I∈[0,1] 对身强/身弱表做线性插值，特殊格局可直接覆盖。
@@ -122,10 +125,12 @@ def blend_ten_god_weights(
         return special_pattern
 
     i = max(0.0, min(1.0, strength_index))
+    strong_weights = strong_weights or STRONG_TEN_GOD_WEIGHTS
+    weak_weights = weak_weights or WEAK_TEN_GOD_WEIGHTS
     blended = {}
-    for key in STRONG_TEN_GOD_WEIGHTS.keys():
-        strong_v = STRONG_TEN_GOD_WEIGHTS.get(key, 0.0)
-        weak_v = WEAK_TEN_GOD_WEIGHTS.get(key, 0.0)
+    for key in strong_weights.keys():
+        strong_v = strong_weights.get(key, 0.0)
+        weak_v = weak_weights.get(key, 0.0)
         blended[key] = i * strong_v + (1 - i) * weak_v
     return blended
 
@@ -135,13 +140,20 @@ def score_ten_god(
     wuxing_relation: Optional[str],
     strength_index: float,
     special_pattern: Optional[Dict[str, float]] = None,
+    strong_weights: Optional[Dict[str, float]] = None,
+    weak_weights: Optional[Dict[str, float]] = None,
 ) -> float:
     """
     十神喜忌 = 插值后的“专属喜忌表” × (1 + 五行生克乘数)。
     wuxing_relation 可选值：生我/同我/我克/克我/我生，缺省按 0 处理。
     """
 
-    weights = blend_ten_god_weights(strength_index, special_pattern)
+    weights = blend_ten_god_weights(
+        strength_index,
+        special_pattern,
+        strong_weights=strong_weights,
+        weak_weights=weak_weights,
+    )
     base = weights.get(shishen, 0.0)
     multi = WUXING_MULTIPLIER.get(wuxing_relation or "", 0.0)
     return base * (1.0 + multi)
@@ -184,6 +196,8 @@ def build_year_signal(
     special_pattern: Optional[Dict[str, float]] = None,
     relation_trigger: float = 1.0,
     ten_god_weight: float = 10.0,
+    strong_weights: Optional[Dict[str, float]] = None,
+    weak_weights: Optional[Dict[str, float]] = None,
 ) -> pd.Series:
     """
     结合周期性涨跌、十神喜忌插值、五行乘数与刑冲合害（或关键词）生成逐年信号。
@@ -212,6 +226,8 @@ def build_year_signal(
                 wuxing_relation=wuxing_relation,
                 strength_index=strength_index,
                 special_pattern=special_pattern,
+                strong_weights=strong_weights,
+                weak_weights=weak_weights,
             ) * ten_god_weight
 
         relations_raw = row.get("relations", [])
