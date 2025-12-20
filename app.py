@@ -612,9 +612,9 @@ with st.sidebar:
     down = st.slider("基准回撤年 -%", 0.0, 5.0, 1.0, 0.1)
     cycle = st.slider("周期(年)", 2, 12, 6, 1, help="用于构造波段节奏，结合刑冲破害进行修正")
     ten_god_weight = st.slider("十神/五行评分权重", 0.0, 30.0, 10.0, 0.5, help="将十神喜忌 × 五行生克的结果放大到年度波动")
-    relation_trigger = st.slider("刑冲合害触发系数", 0.0, 3.0, 1.0, 0.1, help="控制三合六合刑冲破害的影响强度")
-    keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 0.6, 0.1)
-    keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 1.0, 0.1)
+    relation_trigger = st.slider("刑冲合害触发系数", 0.0, 3.0, 0.8, 0.1, help="控制三合六合刑冲破害的影响强度")
+    keyword_boost = st.slider("喜用/合生等加分", 0.0, 1.5, 1.0, 0.1)
+    keyword_risk = st.slider("刑冲破害等扣分", 0.0, 1.5, 0.6, 0.1)
     dayun_drag = st.slider("大运凶象拖累", 0.0, 2.0, 0.6, 0.1)
     ma_short = st.slider("逐年短期均线", 1, 10, 4, 1)
     ma_long = st.slider("逐年长期均线", 1, 20, 9, 1)
@@ -1055,11 +1055,11 @@ if result:
             base_down=float(params.get("down", 1.0)),
             cycle=int(params.get("cycle", 6)),
             keyword_boost=float(params.get("keyword_boost", 1.0)),
-            keyword_risk=float(params.get("keyword_risk", 1.0)),
+            keyword_risk=float(params.get("keyword_risk", 0.6)),
             dayun_drag=float(params.get("dayun_drag", 0.6)),
             strength_index=float(params.get("strength_index", 0.5)),
             special_pattern=params.get("special_pattern"),
-            relation_trigger=float(params.get("relation_trigger", 1.0)),
+            relation_trigger=float(params.get("relation_trigger", 0.8)),
             ten_god_weight=float(params.get("ten_god_weight", 10.0)),
             base=float(params.get("base", 100.0)),
         )

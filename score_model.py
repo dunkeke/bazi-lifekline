@@ -194,7 +194,7 @@ def build_year_signal(
     dayun_risk_weight: float = 0.6,
     strength_index: float = 0.5,
     special_pattern: Optional[Dict[str, float]] = None,
-    relation_trigger: float = 1.0,
+    relation_trigger: float = 0.8,
     ten_god_weight: float = 10.0,
     strong_weights: Optional[Dict[str, float]] = None,
     weak_weights: Optional[Dict[str, float]] = None,
