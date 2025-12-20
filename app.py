@@ -998,23 +998,32 @@ if result:
 
         annotations = deserialize_annotations(state.get("annotations", []))
         if not annotations:
-            st.info("示例：2018 年 结婚（大喜）；2022 年 裁员（大悲）。")
+            st.info("示例：2018 年 结婚；2022 年 裁员。描述只写事件本身，情绪另选即可。")
 
         min_year = int(life["year"].min())
         max_year = int(life["year"].max())
         with st.form("annotation_form"):
             ann_year = st.number_input("标记年份", min_value=min_year, max_value=max_year, value=min_year, step=1)
-            ann_label = st.text_input("事件描述", "结婚（大喜）")
+            ann_label = st.text_input("事件描述", "结婚")
             ann_outcome = st.selectbox("情绪倾向", ["正向 / 大喜", "负向 / 大悲"])
             ann_intensity = st.slider("影响强度", 0.5, 2.0, 1.0, 0.1)
+            ann_note = st.text_area(
+                "补充笔记（可选）",
+                value="",
+                placeholder="记录当时的想法、收获或复盘要点，帮助未来回看。",
+            )
             submitted = st.form_submit_button("添加标记")
 
         if submitted:
+            auto_note = ann_note.strip()
+            if not auto_note:
+                auto_note = f"{ann_year} 年，{ann_label}（{ann_outcome}），影响系数 {ann_intensity:.1f}x"
             annotations.append(
                 Annotation(
                     year=int(ann_year),
                     label=ann_label,
                     outcome=ann_outcome,
+                    note=auto_note,
                     intensity=float(ann_intensity),
                 )
             )
@@ -1028,6 +1037,7 @@ if result:
                         "年份": ann.year,
                         "事件": ann.label,
                         "倾向": ann.outcome,
+                        "笔记": ann.note,
                         "强度": ann.intensity,
                     }
                     for ann in annotations

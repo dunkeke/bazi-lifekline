@@ -23,6 +23,7 @@ class Annotation:
     year: int
     label: str
     outcome: str  # 正向/负向
+    note: str = ""
     intensity: float = 1.0
 
     def sentiment(self) -> float:
@@ -70,6 +71,7 @@ def deserialize_annotations(data: Sequence[Dict[str, Any]]) -> List[Annotation]:
                     year=int(item.get("year")),
                     label=str(item.get("label", "")),
                     outcome=str(item.get("outcome", "")),
+                    note=str(item.get("note", "")),
                     intensity=float(item.get("intensity", 1.0)),
                 )
             )
