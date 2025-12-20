@@ -16,6 +16,14 @@ from geopy.geocoders import Nominatim
 from openai import OpenAI
 from timezonefinder import TimezoneFinder
 
+from backtest import (
+    Annotation,
+    BacktestConfig,
+    apply_feedback_loop,
+    deserialize_annotations,
+    serialize_annotations,
+)
+
 try:
     from geopy.geocoders import Nominatim
 except ImportError:
@@ -492,6 +500,8 @@ state.setdefault("bazi_result", None)
 state.setdefault("offset_source", "auto")
 state.setdefault("longitude_source", "auto")
 state.setdefault("tz_label", list(LOCATIONS.keys())[0])
+state.setdefault("annotations", [])
+state.setdefault("backtest_result", None)
 
 if "pending_tz_label" in state:
     state["tz_label"] = state.pop("pending_tz_label")
@@ -688,6 +698,19 @@ if run:
         "ma_long": ma_long,
         "ma_decade_short": ma_decade_short,
         "ma_decade_long": ma_decade_long,
+        "params": {
+            "up": up,
+            "down": down,
+            "cycle": cycle,
+            "keyword_boost": keyword_boost,
+            "keyword_risk": keyword_risk,
+            "dayun_drag": dayun_drag,
+            "strength_index": strength_index,
+            "special_pattern": special_pattern,
+            "relation_trigger": relation_trigger,
+            "ten_god_weight": ten_god_weight,
+            "base": base,
+        },
     }
 
 
@@ -712,7 +735,9 @@ if result:
     ma_decade_short = result["ma_decade_short"]
     ma_decade_long = result["ma_decade_long"]
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读", "🧪 回测拟合"]
+    )
 
     solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if solar_delta else ""
     st.caption(
@@ -958,3 +983,140 @@ if result:
 
     with tab4:
         add_deepseek_analysis_tab(raw)
+
+    with tab5:
+        st.subheader("人生事件回测与权重拟合")
+        st.markdown(
+            """
+            <div class="callout" style="margin-bottom:10px;">
+                <strong>玩法：</strong> 在 K 线上记录“高光/低谷”年份，系统会依据当年的十神喜忌反向微调权重，
+                拟合出更贴合你的个性化评分模型。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        annotations = deserialize_annotations(state.get("annotations", []))
+        if not annotations:
+            st.info("示例：2018 年 结婚；2022 年 裁员。描述只写事件本身，情绪另选即可。")
+
+        min_year = int(life["year"].min())
+        max_year = int(life["year"].max())
+        with st.form("annotation_form"):
+            ann_year = st.number_input("标记年份", min_value=min_year, max_value=max_year, value=min_year, step=1)
+            ann_label = st.text_input("事件描述", "结婚")
+            ann_outcome = st.selectbox("情绪倾向", ["正向 / 大喜", "负向 / 大悲"])
+            ann_intensity = st.slider("影响强度", 0.5, 2.0, 1.0, 0.1)
+            ann_note = st.text_area(
+                "补充笔记（可选）",
+                value="",
+                placeholder="记录当时的想法、收获或复盘要点，帮助未来回看。",
+            )
+            submitted = st.form_submit_button("添加标记")
+
+        if submitted:
+            auto_note = ann_note.strip()
+            if not auto_note:
+                auto_note = f"{ann_year} 年，{ann_label}（{ann_outcome}），影响系数 {ann_intensity:.1f}x"
+            annotations.append(
+                Annotation(
+                    year=int(ann_year),
+                    label=ann_label,
+                    outcome=ann_outcome,
+                    note=auto_note,
+                    intensity=float(ann_intensity),
+                )
+            )
+            state["annotations"] = serialize_annotations(annotations)
+            st.success("已记录标记，可继续添加或点击下方按钮进行回测。")
+
+        if annotations:
+            ann_df = pd.DataFrame(
+                [
+                    {
+                        "年份": ann.year,
+                        "事件": ann.label,
+                        "倾向": ann.outcome,
+                        "笔记": ann.note,
+                        "强度": ann.intensity,
+                    }
+                    for ann in annotations
+                ]
+            )
+            st.dataframe(ann_df, use_container_width=True, hide_index=True)
+            if st.button("清空标记", type="secondary"):
+                state["annotations"] = []
+                state["backtest_result"] = None
+                annotations = []
+
+        params = result.get("params", {})
+        config = BacktestConfig(
+            base_up=float(params.get("up", 1.0)),
+            base_down=float(params.get("down", 1.0)),
+            cycle=int(params.get("cycle", 6)),
+            keyword_boost=float(params.get("keyword_boost", 1.0)),
+            keyword_risk=float(params.get("keyword_risk", 1.0)),
+            dayun_drag=float(params.get("dayun_drag", 0.6)),
+            strength_index=float(params.get("strength_index", 0.5)),
+            special_pattern=params.get("special_pattern"),
+            relation_trigger=float(params.get("relation_trigger", 1.0)),
+            ten_god_weight=float(params.get("ten_god_weight", 10.0)),
+            base=float(params.get("base", 100.0)),
+        )
+
+        if annotations and st.button("根据标记回测并拟合权重", type="primary"):
+            feedback = apply_feedback_loop(
+                df_liunian,
+                df_dayun,
+                annotations,
+                config=config,
+                learning_rate=0.05,
+            )
+            state["backtest_result"] = feedback
+
+        backtest_result = state.get("backtest_result")
+        if backtest_result:
+            tuned_life = backtest_result.tuned_life
+            st.markdown("#### 拟合后的 LifeIndex 轨迹")
+            fig_bt = go.Figure()
+            fig_bt.add_trace(
+                go.Scatter(
+                    x=tuned_life["year"],
+                    y=tuned_life["life_index"],
+                    mode="lines+markers",
+                    name="回测结果",
+                    line=dict(color="#8b4513", width=3),
+                    marker=dict(size=8, color="#f2c94c"),
+                )
+            )
+            for ann in annotations:
+                fig_bt.add_vline(x=int(ann.year), line_dash="dot", line_color="#e27d60", opacity=0.3)
+            fig_bt.update_layout(
+                height=320,
+                xaxis_title="年份",
+                yaxis_title="LifeIndex",
+                template="simple_white",
+                margin=dict(l=40, r=20, t=10, b=30),
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+            st.markdown("#### 权重微调摘要")
+            adjust_df = pd.DataFrame(
+                backtest_result.adjustments, columns=["十神", "Δ权重"]
+            )
+            if adjust_df.empty:
+                st.info("当前标记未匹配到流年十神，暂无需要调整的权重。")
+            else:
+                st.dataframe(adjust_df, use_container_width=True, hide_index=True)
+
+            weights_df = pd.DataFrame(
+                [
+                    {
+                        "十神": k,
+                        "身强权重": backtest_result.strong_weights.get(k, 0.0),
+                        "身弱权重": backtest_result.weak_weights.get(k, 0.0),
+                    }
+                    for k in sorted(backtest_result.strong_weights.keys())
+                ]
+            )
+            st.dataframe(weights_df, use_container_width=True, hide_index=True)
