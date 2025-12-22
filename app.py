@@ -11,6 +11,7 @@ except ImportError:  # Python < 3.9 fallback
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 from geopy.geocoders import Nominatim
 from openai import OpenAI
@@ -1077,6 +1078,10 @@ if result:
         backtest_result = state.get("backtest_result")
         if backtest_result:
             tuned_life = backtest_result.tuned_life
+            tuned_life = tuned_life.sort_values("year").reset_index(drop=True)
+            tuned_life["ma_short"] = tuned_life["life_index"].rolling(window=ma_short, min_periods=1).mean()
+            tuned_life["ma_long"] = tuned_life["life_index"].rolling(window=ma_long, min_periods=1).mean()
+
             st.markdown("#### 拟合后的 LifeIndex 轨迹")
             fig_bt = go.Figure()
             fig_bt.add_trace(
@@ -1099,6 +1104,105 @@ if result:
                 margin=dict(l=40, r=20, t=10, b=30),
             )
             st.plotly_chart(fig_bt, use_container_width=True)
+
+            st.markdown("#### 原盘 vs 回测逐年对比（含均线与差值）")
+            base_life = life.sort_values("year")[["year", "life_index", "ma_short", "ma_long"]]
+            compare_df = base_life.merge(
+                tuned_life[["year", "life_index", "ma_short", "ma_long"]],
+                on="year",
+                suffixes=("_base", "_tuned"),
+            )
+            compare_df["delta"] = compare_df["life_index_tuned"] - compare_df["life_index_base"]
+
+            fig_cmp = make_subplots(specs=[[{"secondary_y": True}]])
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["life_index_base"],
+                    mode="lines",
+                    name="原盘 LifeIndex",
+                    line=dict(color="#5b8a72", width=3),
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["ma_short_base"],
+                    mode="lines",
+                    name=f"原盘 MA{ma_short}",
+                    line=dict(color="#8acbb5", dash="dot"),
+                    opacity=0.65,
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["ma_long_base"],
+                    mode="lines",
+                    name=f"原盘 MA{ma_long}",
+                    line=dict(color="#9aa7e0", dash="dash"),
+                    opacity=0.6,
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["life_index_tuned"],
+                    mode="lines+markers",
+                    name="回测 LifeIndex",
+                    line=dict(color="#8b4513", width=3),
+                    marker=dict(size=7, color="#f2c94c"),
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["ma_short_tuned"],
+                    mode="lines",
+                    name=f"回测 MA{ma_short}",
+                    line=dict(color="#d8a24a", dash="dot"),
+                    opacity=0.6,
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Scatter(
+                    x=compare_df["year"],
+                    y=compare_df["ma_long_tuned"],
+                    mode="lines",
+                    name=f"回测 MA{ma_long}",
+                    line=dict(color="#c17b63", dash="dash"),
+                    opacity=0.55,
+                ),
+                secondary_y=False,
+            )
+            fig_cmp.add_trace(
+                go.Bar(
+                    x=compare_df["year"],
+                    y=compare_df["delta"],
+                    name="差值 (回测-原盘)",
+                    marker_color="#6c5b7b",
+                    opacity=0.35,
+                ),
+                secondary_y=True,
+            )
+            for ann in annotations:
+                fig_cmp.add_vline(x=int(ann.year), line_dash="dot", line_color="#e27d60", opacity=0.25)
+
+            fig_cmp.update_layout(
+                height=420,
+                xaxis_title="年份",
+                yaxis_title="LifeIndex",
+                hovermode="x unified",
+                template="simple_white",
+                margin=dict(l=40, r=20, t=30, b=30),
+            )
+            fig_cmp.update_yaxes(title_text="差值", secondary_y=True, showgrid=False)
+            st.plotly_chart(fig_cmp, use_container_width=True)
 
             st.markdown("#### 权重微调摘要")
             adjust_df = pd.DataFrame(
