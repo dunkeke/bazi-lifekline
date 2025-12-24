@@ -263,6 +263,10 @@ def analyze_bazi_with_deepseek(raw_bazi_output: str, api_key: str) -> str:
         return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
 
 
+def _sync_shared_api_key(source_key: str):
+    st.session_state["deepseek_api_key_shared"] = st.session_state.get(source_key, "")
+
+
 def analyze_daily_fortune_with_deepseek(
     natal_raw_output: str,
     daily_bazi_summary: str,
@@ -320,15 +324,17 @@ def add_deepseek_analysis_tab(raw_bazi_output: str):
     st.markdown("### 🧠 AI深度解读：洞悉命理玄机")
 
     preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+    st.session_state.setdefault("deepseek_api_key_shared", preset_key)
     col1, col2 = st.columns([3, 1])
     with col1:
         api_key = st.text_input(
             "DeepSeek API密钥",
             type="password",
-            value=preset_key,
-            key="deepseek_api_key",
+            value=st.session_state.get("deepseek_api_key_shared", preset_key),
+            key="deepseek_api_key_main",
             help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
             placeholder="输入以 sk- 开头的密钥",
+            on_change=lambda: _sync_shared_api_key("deepseek_api_key_main"),
         )
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1074,16 +1080,16 @@ if result:
 
         st.markdown("### 🤖 AI 流日运势解读")
         preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+        st.session_state.setdefault("deepseek_api_key_shared", preset_key)
         api_key_daily = st.text_input(
             "DeepSeek API密钥（可复用上方）",
             type="password",
-            value=st.session_state.get("deepseek_api_key", preset_key),
+            value=st.session_state.get("deepseek_api_key_shared", preset_key),
             key="deepseek_api_key_daily",
             help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
             placeholder="输入以 sk- 开头的密钥",
+            on_change=lambda: _sync_shared_api_key("deepseek_api_key_daily"),
         )
-        if api_key_daily:
-            st.session_state["deepseek_api_key"] = api_key_daily
 
         daily_button = st.button("生成流日AI解读", type="secondary")
         daily_analysis = None
