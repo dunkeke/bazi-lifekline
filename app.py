@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from geopy.geocoders import Nominatim
+from lunar_python import Solar
 from openai import OpenAI
 from timezonefinder import TimezoneFinder
 
@@ -262,6 +263,55 @@ def analyze_bazi_with_deepseek(raw_bazi_output: str, api_key: str) -> str:
         return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
 
 
+def analyze_daily_fortune_with_deepseek(
+    natal_raw_output: str,
+    daily_bazi_summary: str,
+    target_date: dt.date,
+    api_key: str,
+) -> str:
+    """
+    通过 DeepSeek 对流日八字进行运势分析与建议。
+    """
+
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    system_prompt = """你是一位精通中国传统八字命理学的专家，擅长结合本命八字与流日八字做日运分析。
+
+请根据提供的本命盘原始输出与流日八字，生成一份简洁、可执行的日运分析，包含：
+1. 流日概览：当天干支气场与关键词
+2. 本命交互：流日与本命的生克、喜忌、冲合提示
+3. 运势建议：事业/财务/情感/健康各 1-2 条实用建议
+4. 风险提醒：避免事项与可化解的小动作
+
+语言专业但易懂，避免过度玄学化，强调可执行建议。"""
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"目标日期：{target_date:%Y-%m-%d}\n"
+                        f"流日八字：{daily_bazi_summary}\n\n"
+                        f"本命八字原始输出：\n{natal_raw_output}"
+                    ),
+                },
+            ],
+            stream=True,
+            max_tokens=1800,
+            temperature=0.7,
+        )
+
+        parts = []
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
+
+
 def add_deepseek_analysis_tab(raw_bazi_output: str):
     """
     在 Streamlit 中渲染 DeepSeek AI 解读入口。
@@ -276,6 +326,7 @@ def add_deepseek_analysis_tab(raw_bazi_output: str):
             "DeepSeek API密钥",
             type="password",
             value=preset_key,
+            key="deepseek_api_key",
             help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
             placeholder="输入以 sk- 开头的密钥",
         )
@@ -364,6 +415,17 @@ def _resolve_timezone(tz_label: str, offset_hours: float) -> dt.tzinfo:
         return ZoneInfo(tz_value)
     except ZoneInfoNotFoundError:
         return dt.timezone.utc
+
+
+def _get_daily_bazi_summary(date_obj: dt.date, hour: int = 12) -> Tuple[str, str]:
+    solar = Solar.fromYmdHms(date_obj.year, date_obj.month, date_obj.day, hour, 0, 0)
+    lunar = solar.getLunar()
+    ba = lunar.getEightChar()
+    gans = [ba.getYearGan(), ba.getMonthGan(), ba.getDayGan(), ba.getTimeGan()]
+    zhis = [ba.getYearZhi(), ba.getMonthZhi(), ba.getDayZhi(), ba.getTimeZhi()]
+    pillars = [f"{gan}{zhi}" for gan, zhi in zip(gans, zhis)]
+    summary = "年柱{} · 月柱{} · 日柱{} · 时柱{}".format(*pillars)
+    return summary, pillars[2]
 
 
 def _calculate_offset_hours(tz_name: str) -> float:
@@ -736,8 +798,8 @@ if result:
     ma_decade_short = result["ma_decade_short"]
     ma_decade_long = result["ma_decade_long"]
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读", "🧪 回测拟合"]
+    tab1, tab2, tab3, tab4, tab6, tab5 = st.tabs(
+        ["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读", "🌞 流日运势", "🧪 回测拟合"]
     )
 
     solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if solar_delta else ""
@@ -984,6 +1046,87 @@ if result:
 
     with tab4:
         add_deepseek_analysis_tab(raw)
+
+    with tab6:
+        st.markdown(
+            """
+            <div class="callout" style="margin-bottom:10px;">
+                <strong>流日提示：</strong> 默认按所选日期中午 12:00 排盘，避免日柱交界波动；若你更关注某个时段，可结合实际时辰自行对照。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        tz_info = _resolve_timezone(tz_label, offset)
+        today_local = dt.datetime.now(tz_info).date()
+        daily_date = st.date_input("选择流日日期", value=today_local, key="daily_date")
+
+        daily_summary, daily_day_pillar = _get_daily_bazi_summary(daily_date)
+        st.markdown(
+            f"""
+            <div class="section-card">
+                <div class="section-title">流日八字</div>
+                <div class="section-desc">{daily_summary}</div>
+                <div class="section-desc">当日主柱：{daily_day_pillar}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("### 🤖 AI 流日运势解读")
+        preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+        api_key_daily = st.text_input(
+            "DeepSeek API密钥（可复用上方）",
+            type="password",
+            value=st.session_state.get("deepseek_api_key", preset_key),
+            key="deepseek_api_key_daily",
+            help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
+            placeholder="输入以 sk- 开头的密钥",
+        )
+        if api_key_daily:
+            st.session_state["deepseek_api_key"] = api_key_daily
+
+        daily_button = st.button("生成流日AI解读", type="secondary")
+        daily_analysis = None
+        if daily_button:
+            if not api_key_daily:
+                st.error("请先输入 API 密钥，或在环境变量 DEEPSEEK_API_KEY 中配置。")
+            elif not api_key_daily.startswith("sk-"):
+                st.warning("API 密钥格式似乎不正确，应以 sk- 开头。")
+            else:
+                with st.spinner("🌤️ AI 正在分析流日气象，解读运势建议……"):
+                    daily_analysis = analyze_daily_fortune_with_deepseek(
+                        raw,
+                        daily_summary,
+                        daily_date,
+                        api_key_daily,
+                    )
+
+        if daily_analysis:
+            st.markdown("---")
+            st.markdown("### 📌 流日运势建议")
+            st.markdown(
+                """
+                <style>
+                .ai-analysis {
+                    background: linear-gradient(135deg, #fdfcfb 0%, #f5f7fa 100%);
+                    border-left: 4px solid #c79b64;
+                    padding: 20px;
+                    border-radius: 10px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+                    margin: 15px 0;
+                }
+                .ai-analysis p {
+                    line-height: 1.7;
+                    color: #4b3a28;
+                    margin: 0;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            for section in daily_analysis.split("\n\n"):
+                if section.strip():
+                    st.markdown(f'<div class="ai-analysis">{section}</div>', unsafe_allow_html=True)
 
     with tab5:
         st.subheader("人生事件回测与权重拟合")
