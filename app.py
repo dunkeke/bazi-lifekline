@@ -268,6 +268,74 @@ def _sync_shared_api_key(source_key: str):
     st.session_state["deepseek_api_key_shared"] = st.session_state.get(source_key, "")
 
 
+HEXAGRAM_NAMES = {
+    "乾乾": "乾为天",
+    "坤坤": "坤为地",
+    "坎震": "水雷屯",
+    "艮坎": "山水蒙",
+    "坎乾": "水天需",
+    "乾坎": "天水讼",
+    "坤坎": "地水师",
+    "坎坤": "水地比",
+    "巽乾": "风天小畜",
+    "乾兑": "天泽履",
+    "坤乾": "地天泰",
+    "乾坤": "天地否",
+    "乾离": "天火同人",
+    "离乾": "火天大有",
+    "坤艮": "地山谦",
+    "震坤": "雷地豫",
+    "兑震": "泽雷随",
+    "艮巽": "山风蛊",
+    "坤兑": "地泽临",
+    "巽坤": "风地观",
+    "离震": "火雷噬嗑",
+    "艮离": "山火贲",
+    "艮坤": "山地剥",
+    "坤震": "地雷复",
+    "乾震": "天雷无妄",
+    "艮乾": "山天大畜",
+    "艮震": "山雷颐",
+    "兑巽": "泽风大过",
+    "坎坎": "坎为水",
+    "离离": "离为火",
+    "兑艮": "泽山咸",
+    "震巽": "雷风恒",
+    "乾艮": "天山遁",
+    "震乾": "雷天大壮",
+    "离坤": "火地晋",
+    "坤离": "地火明夷",
+    "巽离": "风火家人",
+    "离兑": "火泽睽",
+    "坎艮": "水山蹇",
+    "震坎": "雷水解",
+    "艮兑": "山泽损",
+    "巽震": "风雷益",
+    "兑乾": "泽天夬",
+    "乾巽": "天风姤",
+    "兑坤": "泽地萃",
+    "坤巽": "地风升",
+    "兑坎": "泽水困",
+    "坎巽": "水风井",
+    "兑离": "泽火革",
+    "离巽": "火风鼎",
+    "震震": "震为雷",
+    "艮艮": "艮为山",
+    "巽艮": "风山渐",
+    "震兑": "雷泽归妹",
+    "震离": "雷火丰",
+    "离艮": "火山旅",
+    "巽巽": "巽为风",
+    "兑兑": "兑为泽",
+    "巽坎": "风水涣",
+    "坎兑": "水泽节",
+    "巽兑": "风泽中孚",
+    "震艮": "雷山小过",
+    "坎离": "水火既济",
+    "离坎": "火水未济",
+}
+
+
 def _build_trigram_name(lines: list[bool]) -> str:
     trigram_map = {
         (True, True, True): "乾",
@@ -330,6 +398,10 @@ def _shake_yijing_hexagram() -> dict:
         "transformed_lines": transformed_lines,
         "base_trigram": f"{base_trigram_upper}{base_trigram_lower}",
         "changed_trigram": f"{changed_trigram_upper}{changed_trigram_lower}",
+        "base_hexagram": HEXAGRAM_NAMES.get(f"{base_trigram_upper}{base_trigram_lower}", "未知卦"),
+        "changed_hexagram": HEXAGRAM_NAMES.get(
+            f"{changed_trigram_upper}{changed_trigram_lower}", "未知卦"
+        ),
     }
 
 
@@ -361,8 +433,8 @@ def analyze_yijing_with_deepseek(
     user_prompt = (
         f"起卦日期：{target_date:%Y-%m-%d}\n"
         f"问题：{question or '今日运势与行动建议'}\n"
-        f"本卦（上{hexagram['base_trigram']}下）：\n{base_lines}\n"
-        f"变卦（上{hexagram['changed_trigram']}下）：\n{changed_lines}\n"
+        f"本卦：{hexagram['base_hexagram']}（上{hexagram['base_trigram']}下）\n{base_lines}\n"
+        f"变卦：{hexagram['changed_hexagram']}（上{hexagram['changed_trigram']}下）\n{changed_lines}\n"
         f"动爻位置：{moving_text}"
     )
 
@@ -1300,7 +1372,8 @@ if result:
                 st.markdown(
                     f"""
                     <div class="section-card">
-                        <div class="section-title">本卦（{hexagram['base_trigram']}）</div>
+                        <div class="section-title">本卦：{hexagram['base_hexagram']}</div>
+                        <div class="section-desc">上{hexagram['base_trigram']}下</div>
                         <div class="section-desc" style="white-space:pre-line;">{chr(10).join(line['display'] for line in reversed(hexagram['lines']))}</div>
                     </div>
                     """,
@@ -1310,7 +1383,8 @@ if result:
                 st.markdown(
                     f"""
                     <div class="section-card">
-                        <div class="section-title">变卦（{hexagram['changed_trigram']}）</div>
+                        <div class="section-title">变卦：{hexagram['changed_hexagram']}</div>
+                        <div class="section-desc">上{hexagram['changed_trigram']}下</div>
                         <div class="section-desc" style="white-space:pre-line;">{chr(10).join(reversed(hexagram['transformed_lines']))}</div>
                     </div>
                     """,
