@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import math
 import os
+import random
 from typing import Optional, Tuple
 
 try:
@@ -14,6 +15,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from geopy.geocoders import Nominatim
+from lunar_python import Solar
 from openai import OpenAI
 from timezonefinder import TimezoneFinder
 
@@ -262,6 +264,178 @@ def analyze_bazi_with_deepseek(raw_bazi_output: str, api_key: str) -> str:
         return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
 
 
+def _sync_shared_api_key(source_key: str):
+    st.session_state["deepseek_api_key_shared"] = st.session_state.get(source_key, "")
+
+
+def _build_trigram_name(lines: list[bool]) -> str:
+    trigram_map = {
+        (True, True, True): "乾",
+        (False, False, False): "坤",
+        (True, False, False): "震",
+        (False, True, True): "巽",
+        (False, True, False): "坎",
+        (True, False, True): "离",
+        (True, True, False): "兑",
+        (False, False, True): "艮",
+    }
+    return trigram_map.get(tuple(lines), "未知")
+
+
+def _shake_yijing_hexagram() -> dict:
+    values = [random.choice([6, 7, 8, 9]) for _ in range(6)]
+    lines = []
+    moving_positions = []
+    for idx, val in enumerate(values, start=1):
+        is_yang = val in (7, 9)
+        is_moving = val in (6, 9)
+        base_line = "⚊" if is_yang else "⚋"
+        if val == 9:
+            display = f"{base_line}○"
+        elif val == 6:
+            display = f"{base_line}×"
+        else:
+            display = base_line
+        lines.append(
+            {
+                "value": val,
+                "is_yang": is_yang,
+                "is_moving": is_moving,
+                "display": display,
+                "position": idx,
+            }
+        )
+        if is_moving:
+            moving_positions.append(idx)
+
+    transformed_lines = []
+    for line in lines:
+        is_yang = line["is_yang"]
+        if line["is_moving"]:
+            is_yang = not is_yang
+        transformed_lines.append("⚊" if is_yang else "⚋")
+
+    base_trigram_lower = _build_trigram_name([ln["is_yang"] for ln in lines[:3]])
+    base_trigram_upper = _build_trigram_name([ln["is_yang"] for ln in lines[3:]])
+    changed_trigram_lower = _build_trigram_name(
+        [ln == "⚊" for ln in transformed_lines[:3]]
+    )
+    changed_trigram_upper = _build_trigram_name(
+        [ln == "⚊" for ln in transformed_lines[3:]]
+    )
+
+    return {
+        "lines": lines,
+        "moving_positions": moving_positions,
+        "transformed_lines": transformed_lines,
+        "base_trigram": f"{base_trigram_upper}{base_trigram_lower}",
+        "changed_trigram": f"{changed_trigram_upper}{changed_trigram_lower}",
+    }
+
+
+def analyze_yijing_with_deepseek(
+    question: str,
+    target_date: dt.date,
+    hexagram: dict,
+    api_key: str,
+) -> str:
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    system_prompt = """你是一位精通周易卦象的解读者，擅长结合本卦与变卦给出日运与问卜建议。
+
+请根据用户的问题、起卦日期、本卦与变卦信息，给出：
+1. 卦象概要：本卦与变卦的总体气势与关键词
+2. 动爻提示：动爻位的含义与注意事项
+3. 今日运势：面向当日的行动建议与禁忌
+4. 问卜答复：针对用户问题给出清晰建议
+
+语言务实清晰，避免过度玄学化，给出可执行的建议。"""
+
+    base_lines = "\n".join(line["display"] for line in reversed(hexagram["lines"]))
+    changed_lines = "\n".join(reversed(hexagram["transformed_lines"]))
+    moving_text = (
+        "、".join(str(pos) for pos in hexagram["moving_positions"])
+        if hexagram["moving_positions"]
+        else "无"
+    )
+
+    user_prompt = (
+        f"起卦日期：{target_date:%Y-%m-%d}\n"
+        f"问题：{question or '今日运势与行动建议'}\n"
+        f"本卦（上{hexagram['base_trigram']}下）：\n{base_lines}\n"
+        f"变卦（上{hexagram['changed_trigram']}下）：\n{changed_lines}\n"
+        f"动爻位置：{moving_text}"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            stream=True,
+            max_tokens=1600,
+            temperature=0.7,
+        )
+
+        parts = []
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
+
+
+def analyze_daily_fortune_with_deepseek(
+    natal_raw_output: str,
+    daily_bazi_summary: str,
+    target_date: dt.date,
+    api_key: str,
+) -> str:
+    """
+    通过 DeepSeek 对流日八字进行运势分析与建议。
+    """
+
+    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com/v1")
+    system_prompt = """你是一位精通中国传统八字命理学的专家，擅长结合本命八字与流日八字做日运分析。
+
+请根据提供的本命盘原始输出与流日八字，生成一份简洁、可执行的日运分析，包含：
+1. 流日概览：当天干支气场与关键词
+2. 本命交互：流日与本命的生克、喜忌、冲合提示
+3. 运势建议：事业/财务/情感/健康各 1-2 条实用建议
+4. 风险提醒：避免事项与可化解的小动作
+
+语言专业但易懂，避免过度玄学化，强调可执行建议。"""
+
+    try:
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"目标日期：{target_date:%Y-%m-%d}\n"
+                        f"流日八字：{daily_bazi_summary}\n\n"
+                        f"本命八字原始输出：\n{natal_raw_output}"
+                    ),
+                },
+            ],
+            stream=True,
+            max_tokens=1800,
+            temperature=0.7,
+        )
+
+        parts = []
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        return f"API调用失败：{exc}\n请检查API密钥与网络连接。"
+
+
 def add_deepseek_analysis_tab(raw_bazi_output: str):
     """
     在 Streamlit 中渲染 DeepSeek AI 解读入口。
@@ -270,14 +444,17 @@ def add_deepseek_analysis_tab(raw_bazi_output: str):
     st.markdown("### 🧠 AI深度解读：洞悉命理玄机")
 
     preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+    st.session_state.setdefault("deepseek_api_key_shared", preset_key)
     col1, col2 = st.columns([3, 1])
     with col1:
         api_key = st.text_input(
             "DeepSeek API密钥",
             type="password",
-            value=preset_key,
+            value=st.session_state.get("deepseek_api_key_shared", preset_key),
+            key="deepseek_api_key_main",
             help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
             placeholder="输入以 sk- 开头的密钥",
+            on_change=lambda: _sync_shared_api_key("deepseek_api_key_main"),
         )
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -364,6 +541,17 @@ def _resolve_timezone(tz_label: str, offset_hours: float) -> dt.tzinfo:
         return ZoneInfo(tz_value)
     except ZoneInfoNotFoundError:
         return dt.timezone.utc
+
+
+def _get_daily_bazi_summary(date_obj: dt.date, hour: int = 12) -> Tuple[str, str]:
+    solar = Solar.fromYmdHms(date_obj.year, date_obj.month, date_obj.day, hour, 0, 0)
+    lunar = solar.getLunar()
+    ba = lunar.getEightChar()
+    gans = [ba.getYearGan(), ba.getMonthGan(), ba.getDayGan(), ba.getTimeGan()]
+    zhis = [ba.getYearZhi(), ba.getMonthZhi(), ba.getDayZhi(), ba.getTimeZhi()]
+    pillars = [f"{gan}{zhi}" for gan, zhi in zip(gans, zhis)]
+    summary = "年柱{} · 月柱{} · 日柱{} · 时柱{}".format(*pillars)
+    return summary, pillars[2]
 
 
 def _calculate_offset_hours(tz_name: str) -> float:
@@ -736,8 +924,16 @@ if result:
     ma_decade_short = result["ma_decade_short"]
     ma_decade_long = result["ma_decade_long"]
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["📈 长线星迹·人生K", "🧾 运程账本", "🖨️ 原始输出", "🤖 AI深度解读", "🧪 回测拟合"]
+    tab1, tab2, tab3, tab4, tab6, tab7, tab5 = st.tabs(
+        [
+            "📈 长线星迹·人生K",
+            "🧾 运程账本",
+            "🖨️ 原始输出",
+            "🤖 AI深度解读",
+            "🌞 流日运势",
+            "🧿 卦象问卜",
+            "🧪 回测拟合",
+        ]
     )
 
     solar_note = " (已按真太阳时矫正 {:+.1f} 分钟)".format(solar_delta) if solar_delta else ""
@@ -984,6 +1180,207 @@ if result:
 
     with tab4:
         add_deepseek_analysis_tab(raw)
+
+    with tab6:
+        st.markdown(
+            """
+            <div class="callout" style="margin-bottom:10px;">
+                <strong>流日提示：</strong> 默认按所选日期中午 12:00 排盘，避免日柱交界波动；若你更关注某个时段，可结合实际时辰自行对照。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        tz_info = _resolve_timezone(tz_label, offset)
+        today_local = dt.datetime.now(tz_info).date()
+        daily_date = st.date_input("选择流日日期", value=today_local, key="daily_date")
+
+        daily_summary, daily_day_pillar = _get_daily_bazi_summary(daily_date)
+        st.markdown(
+            f"""
+            <div class="section-card">
+                <div class="section-title">流日八字</div>
+                <div class="section-desc">{daily_summary}</div>
+                <div class="section-desc">当日主柱：{daily_day_pillar}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("### 🤖 AI 流日运势解读")
+        preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+        st.session_state.setdefault("deepseek_api_key_shared", preset_key)
+        api_key_daily = st.text_input(
+            "DeepSeek API密钥（可复用上方）",
+            type="password",
+            value=st.session_state.get("deepseek_api_key_shared", preset_key),
+            key="deepseek_api_key_daily",
+            help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
+            placeholder="输入以 sk- 开头的密钥",
+            on_change=lambda: _sync_shared_api_key("deepseek_api_key_daily"),
+        )
+
+        daily_button = st.button("生成流日AI解读", type="secondary")
+        daily_analysis = None
+        if daily_button:
+            if not api_key_daily:
+                st.error("请先输入 API 密钥，或在环境变量 DEEPSEEK_API_KEY 中配置。")
+            elif not api_key_daily.startswith("sk-"):
+                st.warning("API 密钥格式似乎不正确，应以 sk- 开头。")
+            else:
+                with st.spinner("🌤️ AI 正在分析流日气象，解读运势建议……"):
+                    daily_analysis = analyze_daily_fortune_with_deepseek(
+                        raw,
+                        daily_summary,
+                        daily_date,
+                        api_key_daily,
+                    )
+
+        if daily_analysis:
+            st.markdown("---")
+            st.markdown("### 📌 流日运势建议")
+            st.markdown(
+                """
+                <style>
+                .ai-analysis {
+                    background: linear-gradient(135deg, #fdfcfb 0%, #f5f7fa 100%);
+                    border-left: 4px solid #c79b64;
+                    padding: 20px;
+                    border-radius: 10px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+                    margin: 15px 0;
+                }
+                .ai-analysis p {
+                    line-height: 1.7;
+                    color: #4b3a28;
+                    margin: 0;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            for section in daily_analysis.split("\n\n"):
+                if section.strip():
+                    st.markdown(f'<div class="ai-analysis">{section}</div>', unsafe_allow_html=True)
+
+    with tab7:
+        st.markdown(
+            """
+            <div class="callout" style="margin-bottom:10px;">
+                <strong>起卦说明：</strong> 采用简化三枚硬币法生成六爻，标记动爻并推导变卦；用于日运/问卜的提示性参考。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        tz_info = _resolve_timezone(tz_label, offset)
+        today_local = dt.datetime.now(tz_info).date()
+        hex_date = st.date_input(
+            "起卦日期",
+            value=st.session_state.get("daily_date", today_local),
+            key="yijing_date",
+        )
+        question = st.text_input("问卜主题（可选）", value="", key="yijing_question")
+
+        col_shake, col_reset = st.columns([1, 1])
+        with col_shake:
+            shake = st.button("🎲 摇卦生成卦象", type="primary")
+        with col_reset:
+            reset = st.button("重置卦象", type="secondary")
+
+        if reset:
+            st.session_state.pop("yijing_hexagram", None)
+
+        if shake:
+            st.session_state["yijing_hexagram"] = _shake_yijing_hexagram()
+
+        hexagram = st.session_state.get("yijing_hexagram")
+        if hexagram:
+            st.markdown("### 本卦 / 变卦")
+            cols = st.columns(2)
+            with cols[0]:
+                st.markdown(
+                    f"""
+                    <div class="section-card">
+                        <div class="section-title">本卦（{hexagram['base_trigram']}）</div>
+                        <div class="section-desc" style="white-space:pre-line;">{chr(10).join(line['display'] for line in reversed(hexagram['lines']))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with cols[1]:
+                st.markdown(
+                    f"""
+                    <div class="section-card">
+                        <div class="section-title">变卦（{hexagram['changed_trigram']}）</div>
+                        <div class="section-desc" style="white-space:pre-line;">{chr(10).join(reversed(hexagram['transformed_lines']))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            moving_text = (
+                "、".join(str(pos) for pos in hexagram["moving_positions"])
+                if hexagram["moving_positions"]
+                else "无"
+            )
+            st.markdown(f"**动爻位置：** {moving_text}")
+
+            st.markdown("### 🤖 AI 卦象解读")
+            preset_key = os.getenv("DEEPSEEK_API_KEY", "")
+            st.session_state.setdefault("deepseek_api_key_shared", preset_key)
+            api_key_hex = st.text_input(
+                "DeepSeek API密钥（可复用上方）",
+                type="password",
+                value=st.session_state.get("deepseek_api_key_shared", preset_key),
+                key="deepseek_api_key_hex",
+                help="密钥可在 DeepSeek 平台创建，建议以环境变量 DEEPSEEK_API_KEY 预填。",
+                placeholder="输入以 sk- 开头的密钥",
+                on_change=lambda: _sync_shared_api_key("deepseek_api_key_hex"),
+            )
+
+            hex_button = st.button("生成卦象AI解读", type="secondary")
+            hex_analysis = None
+            if hex_button:
+                if not api_key_hex:
+                    st.error("请先输入 API 密钥，或在环境变量 DEEPSEEK_API_KEY 中配置。")
+                elif not api_key_hex.startswith("sk-"):
+                    st.warning("API 密钥格式似乎不正确，应以 sk- 开头。")
+                else:
+                    with st.spinner("🔮 AI 正在解读卦象，生成运势建议……"):
+                        hex_analysis = analyze_yijing_with_deepseek(
+                            question,
+                            hex_date,
+                            hexagram,
+                            api_key_hex,
+                        )
+
+            if hex_analysis:
+                st.markdown("---")
+                st.markdown("### 📜 卦象解读建议")
+                st.markdown(
+                    """
+                    <style>
+                    .ai-analysis {
+                        background: linear-gradient(135deg, #fdfcfb 0%, #f5f7fa 100%);
+                        border-left: 4px solid #c79b64;
+                        padding: 20px;
+                        border-radius: 10px;
+                        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+                        margin: 15px 0;
+                    }
+                    .ai-analysis p {
+                        line-height: 1.7;
+                        color: #4b3a28;
+                        margin: 0;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                for section in hex_analysis.split("\n\n"):
+                    if section.strip():
+                        st.markdown(f'<div class="ai-analysis">{section}</div>', unsafe_allow_html=True)
+        else:
+            st.info("点击“摇卦生成卦象”获取本卦与变卦，用于日运与问卜参考。")
 
     with tab5:
         st.subheader("人生事件回测与权重拟合")
